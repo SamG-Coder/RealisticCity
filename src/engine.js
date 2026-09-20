@@ -6,7 +6,7 @@ export class BuildingEngine{
  async init(progress=()=>{}){
   this.runtime=await GpuRuntime.create({onError:e=>this.errors.push(String(e?.message||e))});this.device=this.runtime.device;this.context=this.canvas.getContext('webgpu');
   this.device.lost.then(info=>{this.errors.push('Device lost: '+info.message);window.dispatchEvent(new CustomEvent('gpu-error',{detail:info.message}));});
-  const names=['generateScene','probeOutdoor','describeLayout','morton','sortPairs','leaves','parents','initCamera','simulate','accumulate','render'];
+  const names=['generateScene','probeOutdoor','probeRay','probeStreet','describeLayout','morton','sortPairs','leaves','parents','initCamera','simulate','accumulate','farVisibility','render'];
   for(let i=0;i<names.length;i++){const n=names[i];progress(`Preparing ${n} · ${i+1}/${names.length}`);const response=await fetch(`generated/${n}.json`);if(!response.ok)throw Error('Run npm run build first: missing '+n);const a=await response.json();this.kernels[n]=await this.runtime.kernel(a);}
   for(const [name,floats]of Object.entries({s:32+262144*16,nodes:524288*8,keys:524288,C:16,I:16,Plan:64}))this.buffers[name]=this.runtime.createBuffer(floats*4,{label:name});
   await this.resize(1920,1080);progress('Generating rooms and stairs…');await this.build(this.seed);await this.view(1);return this;
@@ -32,14 +32,14 @@ export class BuildingEngine{
  async setFly(enabled){if(enabled===this.flying)return;this.flying=enabled;if(!enabled){await this.build(this.seed,this.lotX,this.lotZ,true);await this.view(0);}}
  async setDistance(radius){if(![2,5,10].includes(radius))throw Error('Unsupported view distance');this.radius=radius;await this.build(this.seed,this.lotX,this.lotZ,this.resident);}
  async resize(width,height){width=Math.ceil(width/64)*64;height=Math.max(64,Math.round(height));if(width===this.width&&height===this.height)return;await this.runtime.idle();
-  for(const n of ['pixels','history'])if(this.buffers[n])this.runtime.destroyBuffer(this.buffers[n]);
-  this.width=width;this.height=height;this.buffers.pixels=this.runtime.createBuffer(width*height*4);this.buffers.history=this.runtime.createBuffer(width*height*16);
+  for(const n of ['pixels','history','Far','Glass'])if(this.buffers[n])this.runtime.destroyBuffer(this.buffers[n]);
+  this.width=width;this.height=height;this.buffers.Far=this.runtime.createBuffer(width*height*64);this.buffers.Glass=this.runtime.createBuffer(width*height*16);this.buffers.pixels=this.runtime.createBuffer(width*height*4);this.buffers.history=this.runtime.createBuffer(width*height*16);
   this.canvas.width=width;this.canvas.height=height;this.context.configure({device:this.device,format:'rgba8unorm',usage:GPUTextureUsage.COPY_DST|GPUTextureUsage.RENDER_ATTACHMENT,alphaMode:'opaque'});this.sample=0;
  }
  async view(view){this.runtime.batch().dispatch(this.bind('initCamera',{view}),[1]).submit();await this.runtime.idle();this.sample=0;}
  async camera(){return Array.from(await this.runtime.read(this.buffers.C));}
  setCamera(values){this.runtime.write(this.buffers.C,new Float32Array(values));this.sample=0;}
  step(input,steps){const values=new Float32Array(16);values.set(input);values[6]=this.flying?1:0;values[7]=this.flySpeed;this.runtime.write(this.buffers.I,values);this.runtime.batch().dispatch(this.bind('simulate',{steps}),[1]).submit();}
- draw(){const b=this.runtime.batch();b.dispatch(this.bind('render',{w:this.width,h:this.height,quality:this.quality}),[Math.ceil(this.width/64),this.height]).dispatch(this.bind('accumulate'),[1]).endPass();b.encoder.copyBufferToTexture({buffer:this.buffers.pixels.gpuBuffer,bytesPerRow:this.width*4,rowsPerImage:this.height},{texture:this.context.getCurrentTexture()},[this.width,this.height]);b.submit();}
+ draw(){const b=this.runtime.batch();b.dispatch(this.bind('farVisibility',{w:this.width,h:this.height}),[Math.ceil(this.width/64),this.height]);b.dispatch(this.bind('render',{w:this.width,h:this.height,quality:this.quality}),[Math.ceil(this.width/64),this.height]).dispatch(this.bind('accumulate'),[1]).endPass();b.encoder.copyBufferToTexture({buffer:this.buffers.pixels.gpuBuffer,bytesPerRow:this.width*4,rowsPerImage:this.height},{texture:this.context.getCurrentTexture()},[this.width,this.height]);b.submit();}
  async pixels(){const words=await this.runtime.read(this.buffers.pixels,Uint32Array);return new Uint8Array(words.buffer,words.byteOffset,words.byteLength);}
 }

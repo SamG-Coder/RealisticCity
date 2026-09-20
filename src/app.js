@@ -4,7 +4,7 @@ const $=id=>document.getElementById(id),canvas=$('world'),params=new URLSearchPa
 function fail(error){console.error(error);$('error').hidden=false;$('error').textContent=error.stack||String(error);$('status').textContent='ERROR';window.__error=String(error);}
 window.addEventListener('gpu-error',event=>fail(Error(event.detail)));
 const engine=window.engine=new BuildingEngine(canvas);
-function describe(){ $('lot-x').value=engine.lotX;$('lot-z').value=engine.lotZ;$('building-kind').textContent=`${engine.layout[2]} FLOORS · ${['RESIDENTIAL','WORKSPACE','MIXED USE'][engine.layout[4]]}`;$('residency').textContent=engine.resident?`${engine.layout[2]*4} rooms resident · ${(engine.radius*2+1)**2} exteriors`:`Interiors evicted · ${(engine.radius*2+1)**2} exteriors`;}
+function describe(){ $('lot-x').value=engine.lotX;$('lot-z').value=engine.lotZ;$('building-kind').textContent=`${engine.layout[2]} FLOORS · ${['RESIDENTIAL','WORKSPACE','MIXED USE'][engine.layout[4]]}`;$('residency').textContent=engine.resident?`${engine.layout[2]*4} rooms resident · ${(engine.radius*2+1)**2} cached`:`Interiors evicted · ${(engine.radius*2+1)**2} cached`;}
 try{
  await engine.init(message=>$('loading').textContent=message);if(params.has('seed'))await engine.build(Number(params.get('seed')));$('seed').value=engine.seed;describe();
  const resize=async()=>{const width=Number($('resolution').value);await engine.resize(width,Math.round(width*innerHeight/innerWidth));};
