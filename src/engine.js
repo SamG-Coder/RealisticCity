@@ -29,7 +29,7 @@ export class BuildingEngine{
   if(!dx&&!dz&&resident===this.resident)return false;
   await this.build(this.seed,x,z,resident);c[0]=px;c[2]=pz;this.setCamera(c);return true;
  }
- async setFly(enabled){if(enabled===this.flying)return;this.flying=enabled;if(!enabled){await this.build(this.seed,this.lotX,this.lotZ,true);await this.view(0);}}
+ async setFly(enabled){if(enabled===this.flying)return;if(!enabled){await this.stream();if(!this.resident)await this.build(this.seed,this.lotX,this.lotZ,true);const c=await this.camera();c[5]=0;c[6]=0;this.setCamera(c);}this.flying=enabled;}
  async setDistance(radius){if(![2,5,10].includes(radius))throw Error('Unsupported view distance');this.radius=radius;await this.build(this.seed,this.lotX,this.lotZ,this.resident);}
  async resize(width,height){width=Math.ceil(width/64)*64;height=Math.max(64,Math.round(height));if(width===this.width&&height===this.height)return;await this.runtime.idle();
   for(const n of ['pixels','history','Far','Glass'])if(this.buffers[n])this.runtime.destroyBuffer(this.buffers[n]);
