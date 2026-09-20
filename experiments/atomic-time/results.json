@@ -1,0 +1,15 @@
+{
+  "gpu": "NVIDIA GeForce RTX 5080",
+  "cpu_oracle_cases": 162,
+  "cells": 65521,
+  "benchmark_ticks": 8191,
+  "step_passes": 8191,
+  "jump_passes": 13,
+  "step_median_ms": 47.0214,
+  "jump_median_ms": 0.0828,
+  "huge_tick": "1152921504730303765",
+  "huge_passes": 17,
+  "huge_median_ms": 0.0914,
+  "hpp_forward_inverse_and_conservation": true,
+  "validation": "PASS"
+}

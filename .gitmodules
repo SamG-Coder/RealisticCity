@@ -1,0 +1,3 @@
+[submodule "vendor/cuda-webshader"]
+	path = vendor/cuda-webshader
+	url = https://github.com/SamG-Coder/cuda-webshader.git

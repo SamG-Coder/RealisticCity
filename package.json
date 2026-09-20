@@ -1,0 +1,14 @@
+{
+  "name": "seeded-building",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node tools/compile.mjs",
+    "start": "node server.mjs",
+    "test": "node tools/test-browser.mjs",
+    "test:controls": "node tools/test-controls.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}

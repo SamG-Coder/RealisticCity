@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.24)
+project(RealisticCity LANGUAGES CXX CUDA)
+set(CMAKE_CUDA_ARCHITECTURES native)
+add_executable(building building.cu)
+target_compile_features(building PRIVATE cxx_std_17 cuda_std_17)
+target_link_libraries(building PRIVATE user32 gdi32)
+enable_testing()
+add_test(NAME walkthrough COMMAND building --self-test)

@@ -1,0 +1,10 @@
+node_modules/
+captures/
+*.log
+/reference/
+/generated/
+**/build/
+*.exe
+.env
+.env.*
+!.env.example
