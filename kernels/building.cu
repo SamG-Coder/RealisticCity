@@ -1,4 +1,5 @@
-#define CAP 32768
+#define CAP 262144
+#define GROUND 11
 #define PI 3.14159265359f
 #define PLASTER 0
 #define BRICK 1
@@ -11,7 +12,7 @@
 #define TILE 8
 #define LEAF 9
 #define ASPHALT 10
-struct Shape { float3 lo; float3 hi; float3 color; float3 origin; unsigned int id; int mat; int solid; };
+struct Shape { float3 lo; float3 hi; float3 color; float3 origin; float angle; unsigned int id; int mat; int solid; };
 struct Node { float3 lo; float3 hi; int shape; };
 struct Camera { float3 foot; float yaw; float pitch; float vy; int grounded; float distance; };
 struct Input { float forward; float side; float dx; float dy; int sprint; int jump; };
@@ -33,8 +34,35 @@ __device__ unsigned int roomKey(const float* s,int floor,int side,int back){retu
 __device__ float roomSplit(const float* s,int floor,int side){return -2.0f+randf(roomKey(s,floor,side,0)^713u)*1.5f;}
 __device__ float roomZ(const float* s,int floor,int side,int back){float split=roomSplit(s,floor,side);return back?(split+5.4f)*.5f:(-8.0f+split)*.5f;}
 __device__ int roomType(const float* s,int floor,int side,int back){unsigned int key=roomKey(s,floor,side,back);int use=(int)s[7];if(use==1){int v=(int)(mix(key^9821u)%4u);return v==0?1:(v==1?3:(v==2?2:0));}if(use==0&&floor>0)return 4+(int)(mix(key^9821u)%4u);return (int)(mix(key^9821u)%8u);}
-__device__ Shape readShape(const float* s,int index){int b=32+index*16;Shape o;o.lo=make_float3(s[b],s[b+1],s[b+2]);o.hi=make_float3(s[b+3],s[b+4],s[b+5]);o.color=make_float3(s[b+6],s[b+7],s[b+8]);o.mat=(int)s[b+9];o.solid=(int)s[b+10];o.origin=make_float3(s[b+13],0,s[b+14]);o.id=(unsigned int)s[b+11]^((unsigned int)s[b+12]<<16);return o;}
-__device__ void box(float* s,float3 p,float3 half,int mat,float3 color,bool solid=true){int i=(int)s[0];if(i>=CAP){s[2]=1.0f;return;}s[0]=(float)(i+1);p.x=p.x*s[5]+s[16];p.z=p.z*s[6]+s[17];half.x*=s[5];half.z*=s[6];int b=32+i*16;float3 lo=p-half,hi=p+half;s[b]=lo.x;s[b+1]=lo.y;s[b+2]=lo.z;s[b+3]=hi.x;s[b+4]=hi.y;s[b+5]=hi.z;s[b+6]=color.x;s[b+7]=color.y;s[b+8]=color.z;s[b+9]=(float)mat;s[b+10]=solid?1.0f:0.0f;s[b+11]=s[3];s[b+12]=s[4];s[b+13]=s[16];s[b+14]=s[17];s[b+15]=0;}
+// Disjoint seed namespaces: region terrain and shared road edges never depend on house DNA.
+__device__ unsigned int regionKey(unsigned int seed,int x,int z){return mix(seed^294731u^mix((unsigned int)x*1597334677u)^mix((unsigned int)z*3812015801u));}
+__device__ float3 rotateY(float3 p,float a){float c=cosf(a),v=sinf(a);return make_float3(c*p.x+v*p.z,p.y,-v*p.x+c*p.z);}
+struct Street {float3 a;float3 b;float width;int active;};
+__device__ float3 roadNode(unsigned int seed,int x,int z){unsigned int k=regionKey(seed^87139u,x,z);return make_float3((x-.5f)*40.0f+(randf(k)-.5f)*7.0f,0,(z-.5f)*40.0f+(randf(k^781u)-.5f)*7.0f);}
+__device__ Street street(unsigned int seed,int x,int z,int axis){Street r;r.a=roadNode(seed,x,z);r.b=roadNode(seed,x+(axis==0?1:0),z+(axis==1?1:0));unsigned int k=regionKey(seed^918271u,x,z)^mix((unsigned int)axis+1u);r.width=2.4f+randf(k)*.9f;
+// Meandering east/west spines stay connected. Sparse cross-links make T junctions and elongated blocks.
+r.active=axis==0||x%4==0||randf(k^992u)>.48f?1:0;return r;}
+__device__ float3 closestStreet(Street r,float3 p){float3 d=r.b-r.a;float t=clamp(dot(p-r.a,d)/dot(d,d));return r.a+d*t;}
+__device__ Street frontage(unsigned int seed,int x,int z){Street best=street(seed,x,z,0);float score=1e9f;for(int side=0;side<4;++side){Street r=street(seed,x+(side==3?1:0),z+(side==1?1:0),side<2?0:1);if(!r.active)continue;float rank=randf(regionKey(seed^779u,x,z)^(unsigned int)side*179u);if(rank<score){score=rank;best=r;}}return best;}
+__device__ float buildingAngle(unsigned int seed,int x,int z){Street r=frontage(seed,x,z);float3 tangent=norm(r.b-r.a),normal=make_float3(tangent.z,0,-tangent.x),center=make_float3(x*40.0f,0,z*40.0f);if(dot(normal,closestStreet(r,center)-center)<0)normal=normal*(-1.0f);return atan2f(-normal.x,-normal.z);}
+__device__ float3 regionColor(unsigned int seed,int x,int z){float v=randf(regionKey(seed,x,z));return lerp(make_float3(.19f,.26f,.105f),make_float3(.38f,.36f,.20f),v);}
+__device__ float3 outdoorMaterial(const float* s,float3 p,float footprint){
+    unsigned int seed=(unsigned int)s[22];float wx=p.x+s[20]*40.0f,wz=p.z+s[21]*40.0f;float3 point=make_float3(wx,0,wz);
+    int cx=(int)floorf((wx+20)/40),cz=(int)floorf((wz+20)/40);
+    float gx=wx/320.0f,gz=wz/320.0f;int ix=(int)floorf(gx),iz=(int)floorf(gz);float u=fract(gx),v=fract(gz);u=u*u*(3-2*u);v=v*v*(3-2*v);
+    float3 color=lerp(lerp(regionColor(seed,ix,iz),regionColor(seed,ix+1,iz),u),lerp(regionColor(seed,ix,iz+1),regionColor(seed,ix+1,iz+1),u),v);
+    float noise=randf((unsigned int)(int)floorf(wx*70)*73856093u^(unsigned int)(int)floorf(wz*70)*19349663u^seed),micro=clamp(1-footprint*35);
+    float best=1e9f,dist=0,along=0,length=0,width=0;
+    for(int dz=-1;dz<=1;++dz)for(int dx=-1;dx<=1;++dx)for(int axis=0;axis<2;++axis){Street r=street(seed,cx+dx,cz+dz,axis);if(!r.active)continue;float3 d=r.b-r.a;float len=sqrtf(dot(d,d)),t=clamp(dot(point-r.a,d)/(len*len));float dd=sqrtf(dot(point-r.a-d*t,point-r.a-d*t));if(dd-r.width<best){best=dd-r.width;dist=dd;along=t*len;length=len;width=r.width;}}
+    bool path=false;Street front=frontage(seed,cx,cz);float3 center=make_float3(cx*40.0f,0,cz*40.0f),delta=closestStreet(front,center)-center;float len=sqrtf(dot(delta,delta));float longitudinal=dot(point-center,delta)/len,lateral=fabsf((point.x-center.x)*delta.z-(point.z-center.z)*delta.x)/len;path=longitudinal>7&&longitudinal<len&&lateral<1.35f;
+    if(best<0){color=make_float3(.105f,.12f,.125f);bool junction=along<5||along>length-5;
+        if(!junction&&((dist<.07f&&fract(along/5)<.5f)||fabsf(dist-(width-.23f))<.045f))color=make_float3(.81f,.79f,.65f);
+        if((fabsf(along-6)<.65f||fabsf(along-(length-6))<.65f)&&fract(dist/.8f)<.5f)color=make_float3(.82f,.82f,.74f);
+    }else if(best<2||path){color=make_float3(.57f,.56f,.50f);float seam=fminf(fminf(fract(wx/.8f),1-fract(wx/.8f)),fminf(fract(wz/.8f),1-fract(wz/.8f)));if(seam<.016f&&footprint<.04f)color=color*.73f;}
+    return color*(1+(noise-.5f)*.15f*micro);
+}
+__device__ Shape readShape(const float* s,int index){int b=32+index*16;Shape o;o.lo=make_float3(s[b],s[b+1],s[b+2]);o.hi=make_float3(s[b+3],s[b+4],s[b+5]);o.color=make_float3(s[b+6],s[b+7],s[b+8]);o.mat=(int)s[b+9];o.solid=(int)s[b+10];o.origin=make_float3(s[b+13],0,s[b+14]);o.angle=s[b+15];o.id=(unsigned int)s[b+11]^((unsigned int)s[b+12]<<16);return o;}
+__device__ void box(float* s,float3 p,float3 half,int mat,float3 color,bool solid=true){int i=(int)s[0];if(i>=CAP){s[2]=1.0f;return;}s[0]=(float)(i+1);p.x=p.x*s[5]+s[16];p.z=p.z*s[6]+s[17];half.x*=s[5];half.z*=s[6];int b=32+i*16;float3 lo=p-half,hi=p+half;s[b]=lo.x;s[b+1]=lo.y;s[b+2]=lo.z;s[b+3]=hi.x;s[b+4]=hi.y;s[b+5]=hi.z;s[b+6]=color.x;s[b+7]=color.y;s[b+8]=color.z;s[b+9]=(float)mat;s[b+10]=solid&&s[26]<.5f?1.0f:0.0f;s[b+11]=s[3];s[b+12]=s[4];s[b+13]=s[16];s[b+14]=s[17];s[b+15]=s[18];}
 __device__ Node readNode(const float* nodes,int i){int b=i*8;Node n;n.lo=make_float3(nodes[b],nodes[b+1],nodes[b+2]);n.hi=make_float3(nodes[b+3],nodes[b+4],nodes[b+5]);n.shape=(int)nodes[b+6];return n;}
 __device__ void writeNode(float* nodes,int i,Node n){int b=i*8;nodes[b]=n.lo.x;nodes[b+1]=n.lo.y;nodes[b+2]=n.lo.z;nodes[b+3]=n.hi.x;nodes[b+4]=n.hi.y;nodes[b+5]=n.hi.z;nodes[b+6]=(float)n.shape;}
 __device__ Camera readCam(const float* C){Camera c;c.foot=make_float3(C[0],C[1],C[2]);c.yaw=C[3];c.pitch=C[4];c.vy=C[5];c.grounded=(int)C[6];c.distance=C[7];return c;}
@@ -121,15 +149,15 @@ __device__ void sideWindow(float* s,float x,float y,float z){
     box(s,make_float3(x,y+.92f,z),make_float3(.3f,.06f,1.18f),CONCRETE,make_float3(.65f,.64f,.57f));
 }
 __device__ void emitBuilding(float* s,unsigned int seed,int lotX,int lotZ,int resident,float offsetX,float offsetZ){
-    s[16]=offsetX;s[17]=offsetZ;unsigned int key=mix(seed^mix((unsigned int)lotX*1973u+1387u)^mix((unsigned int)lotZ*9277u+5261u));
+    s[16]=offsetX;s[17]=offsetZ;s[18]=buildingAngle(seed,lotX,lotZ);s[26]=0;unsigned int key=mix(seed^mix((unsigned int)lotX*1973u+1387u)^mix((unsigned int)lotZ*9277u+5261u));
     s[15]=(float)resident;s[3]=(float)(key&65535u);s[4]=(float)(key>>16);
     s[5]=.90f+.23f*randf(key^101u);s[6]=.93f+.20f*randf(key^102u);s[7]=(float)(mix(key^103u)%3u);s[8]=(float)(2u+mix(key^104u)%3u);s[9]=(float)(mix(key^105u)%3u);
     int floors=(int)s[8];s[10]=0.0f;for(int f=1;f<=4;++f)s[10+f]=s[9+f]+3.08f+.27f*randf(mix(key^(unsigned int)f)^106u);
     float3 plaster=make_float3(.78f,.75f,.66f),brick=make_float3(.40f,.20f,.115f),floorWood=make_float3(.52f,.32f,.17f),dark=make_float3(.13f,.16f,.15f);
     int facade=(int)s[7]==1?CONCRETE:BRICK;brick=lerp(make_float3(.29f,.12f,.07f),make_float3(.49f,.35f,.22f),randf(key^107u));if(facade==CONCRETE)brick=make_float3(.56f,.58f,.54f);
 
-    box(s,make_float3(0,-.08f,-14),make_float3(4,.08f,6),CONCRETE,make_float3(.64f,.62f,.55f));
-    for(int i=0;i<6;++i){plant(s,-5.5f,0,-19+i*1.4f,1.5f);plant(s,5.5f,0,-19+i*1.4f,1.5f);}
+
+
     for(int f=0;f<=floors;++f){float y=floorBase(s,f),storey=f==floors?3.2f:floorBase(s,f+1)-y;
         if(f==0||f==floors)box(s,make_float3(0,y-.12f,1.5f),make_float3(9.2f,.12f,9.7f),f==0?WOOD:CONCRETE,f==0?floorWood:plaster);
         else {between(s,make_float3(-9.2f,y-.20f,-8.2f),make_float3(9.2f,y,5.5f),WOOD,floorWood);
@@ -201,23 +229,32 @@ __device__ void emitBuilding(float* s,unsigned int seed,int lotX,int lotZ,int re
     if(roof==1){for(int j=0;j<48;++j){float x=-9.4f+(j+.5f)*18.8f/48.0f,height=.25f+(1-fabsf(x)/9.4f)*2.1f;box(s,make_float3(x,roofY+height,1.5f),make_float3(18.8f/96.0f,.06f,9.95f),METAL,make_float3(.19f,.22f,.21f));for(int side=-1;side<=1;side+=2)box(s,make_float3(x,roofY+height*.5f,1.5f+side*9.55f),make_float3(18.8f/96.0f,height*.5f,.1f),facade,brick);}}
     if(roof==2){for(int j=0;j<3;++j)box(s,make_float3(0,roofY+j*.38f+.19f,1.5f),make_float3(7.9f-j*1.6f,.19f,8.1f-j*1.6f),CONCRETE,plaster);for(int j=0;j<3;++j)box(s,make_float3(-3.4f+j*3.0f,roofY+1.25f,1.3f),make_float3(.9f,.1f,1.6f),GLASS,make_float3(.15f,.24f,.28f));}
 }
+// Outdoor geometry has its own region seed. Shared edge widths match the analytic ground.
+__device__ void emitOutdoors(float* s,unsigned int seed,int x,int z,float ox,float oz){
+ s[5]=1;s[6]=1;s[26]=1;unsigned int key=regionKey(seed,(int)floorf((float)x/8),(int)floorf((float)z/8));s[3]=(float)(key&65535u);s[4]=(float)(key>>16);
+ for(int axis=0;axis<2;++axis){Street r=street(seed,x,z,axis);if(!r.active)continue;float3 delta=r.b-r.a;float length=sqrtf(dot(delta,delta));s[16]=(r.a.x+r.b.x)*.5f-x*40+ox;s[17]=(r.a.z+r.b.z)*.5f-z*40+oz;s[18]=atan2f(delta.x,delta.z);
+ for(int side=-1;side<=1;side+=2)box(s,make_float3(side*(r.width+.10f),.04f,0),make_float3(.1f,.04f,length*.5f-5),CONCRETE,make_float3(.65f,.64f,.57f),false);
+ }
+ s[16]=ox;s[17]=oz;s[18]=0;unsigned int parcel=mix(key^mix((unsigned int)x)^mix((unsigned int)z*739u));if(randf(parcel)>.25f)plant(s,-13,0,-2,1.3f);if(randf(parcel^29u)>.35f)plant(s,13,0,3,1.3f);
+}
 // A bounded residency window enumerates the SAME exterior grammar at every address.
 // No proxy facade or different distant roof. Only hidden interior allocation changes.
-__global__ void generateScene(float* s,unsigned int seed,int lotX,int lotZ,int resident){
-    if(threadIdx.x||blockIdx.x)return;s[0]=0;s[2]=0;s[5]=1;s[6]=1;s[16]=0;s[17]=0;s[3]=0;s[4]=0;
-    box(s,make_float3(0,-.2f,0),make_float3(120,.2f,120),ASPHALT,make_float3(.26f,.28f,.25f));
-    emitBuilding(s,seed,lotX,lotZ,resident,0,0);s[1]=s[0];float header[18];for(int i=1;i<18;++i)header[i]=s[i];
-    for(int dz=-2;dz<=2;++dz)for(int dx=-2;dx<=2;++dx){if(dx!=0||dz!=0)emitBuilding(s,seed,lotX+dx,lotZ+dz,0,dx*40.0f,dz*40.0f);}
-    float overflow=s[2];for(int i=1;i<18;++i)s[i]=header[i];s[2]=overflow;
+__global__ void generateScene(float* s,unsigned int seed,int lotX,int lotZ,int resident,int radius){
+    if(threadIdx.x||blockIdx.x)return;s[0]=0;s[2]=0;s[5]=1;s[6]=1;s[16]=0;s[17]=0;s[3]=0;s[4]=0;s[18]=0;s[26]=0;s[20]=(float)lotX;s[21]=(float)lotZ;s[22]=(float)seed;s[24]=(float)radius;
+    box(s,make_float3(0,-.2f,0),make_float3(4000,.2f,4000),GROUND,make_float3(.26f,.28f,.25f));
+    emitOutdoors(s,seed,lotX,lotZ,0,0);
+    emitBuilding(s,seed,lotX,lotZ,resident,0,0);s[1]=s[0];float header[19];for(int i=1;i<19;++i)header[i]=s[i];
+    for(int dz=-radius;dz<=radius;++dz)for(int dx=-radius;dx<=radius;++dx){if(dx!=0||dz!=0){emitOutdoors(s,seed,lotX+dx,lotZ+dz,dx*40.0f,dz*40.0f);emitBuilding(s,seed,lotX+dx,lotZ+dz,0,dx*40.0f,dz*40.0f);}}
+    float overflow=s[2];for(int i=1;i<19;++i)s[i]=header[i];s[2]=overflow;
 }
 
-__global__ void describeLayout(const float* s,float* Plan){if(threadIdx.x||blockIdx.x)return;for(int i=0;i<64;++i)Plan[i]=0;Plan[0]=s[5];Plan[1]=s[6];Plan[2]=s[8];Plan[3]=s[9];Plan[4]=s[7];Plan[5]=s[3];Plan[6]=s[4];Plan[7]=s[15];for(int f=0;f<=4;++f)Plan[8+f]=floorBase(s,f);for(int f=0;f<(int)s[8];++f)for(int r=0;r<4;++r){int side=r%2?1:-1;Plan[16+f*4+r]=roomZ(s,f,side,r/2)*s[6];Plan[32+f*4+r]=(float)roomType(s,f,side,r/2);}}
+__global__ void describeLayout(const float* s,float* Plan){if(threadIdx.x||blockIdx.x)return;for(int i=0;i<64;++i)Plan[i]=0;Plan[0]=s[5];Plan[1]=s[6];Plan[2]=s[8];Plan[3]=s[9];Plan[4]=s[7];Plan[5]=s[3];Plan[6]=s[4];Plan[7]=s[15];Plan[13]=s[18];for(int f=0;f<=4;++f)Plan[8+f]=floorBase(s,f);for(int f=0;f<(int)s[8];++f)for(int r=0;r<4;++r){int side=r%2?1:-1;Plan[16+f*4+r]=roomZ(s,f,side,r/2)*s[6];Plan[32+f*4+r]=(float)roomType(s,f,side,r/2);}}
 
 
 __device__ unsigned int spread(unsigned int x){x&=1023u;x=(x|(x<<16))&0x030000ffu;x=(x|(x<<8))&0x0300f00fu;x=(x|(x<<4))&0x030c30c3u;x=(x|(x<<2))&0x09249249u;return x;}
-__global__ void morton(const float* s,unsigned int* keys){int i=(int)(blockIdx.x*blockDim.x+threadIdx.x);if(i>=CAP)return;keys[i*2+1]=(unsigned int)i;if(i>=(int)s[0]){keys[i*2]=4294967295u;return;}Shape o=readShape(s,i);float3 p=(o.lo+o.hi)*0.5f;unsigned int x=(unsigned int)(clamp((p.x+110.0f)/220.0f)*1023.0f),y=(unsigned int)(clamp((p.y+1.0f)/18.0f)*1023.0f),z=(unsigned int)(clamp((p.z+110.0f)/220.0f)*1023.0f);keys[i*2]=spread(x)|(spread(y)<<1)|(spread(z)<<2);}
-__global__ void sortPairs(unsigned int* keys,int stage,int stride){int i=(int)(blockIdx.x*blockDim.x+threadIdx.x);int j=i^stride;if(i>=CAP||j<=i)return;bool up=(i&stage)==0;unsigned int a=keys[i*2],b=keys[j*2],ai=keys[i*2+1],bi=keys[j*2+1];bool greater=a>b||(a==b&&ai>bi);if(greater==up){keys[i*2]=b;keys[i*2+1]=bi;keys[j*2]=a;keys[j*2+1]=ai;}}
-__global__ void leaves(const float* s,const unsigned int* keys,float* nodes){int i=(int)(blockIdx.x*blockDim.x+threadIdx.x);if(i>=CAP)return;int j=(int)keys[i*2+1];Node n;if(j<(int)s[0]){Shape o=readShape(s,j);n.lo=o.lo;n.hi=o.hi;n.shape=j;}else{n.lo=make_float3(1e20f,1e20f,1e20f);n.hi=make_float3(-1e20f,-1e20f,-1e20f);n.shape=-1;}writeNode(nodes,CAP+i,n);}
+__global__ void morton(const float* s,unsigned int* keys){int i=(int)(blockIdx.x*blockDim.x+threadIdx.x);if(i>=(int)s[23])return;keys[i*2+1]=(unsigned int)i;if(i>=(int)s[0]){keys[i*2]=4294967295u;return;}Shape o=readShape(s,i);float3 p=rotateY((o.lo+o.hi)*0.5f-o.origin,o.angle)+o.origin;unsigned int x=(unsigned int)(clamp((p.x+(s[24]+1)*40.0f)/((s[24]+1)*80.0f))*1023.0f),y=(unsigned int)(clamp((p.y+1.0f)/18.0f)*1023.0f),z=(unsigned int)(clamp((p.z+(s[24]+1)*40.0f)/((s[24]+1)*80.0f))*1023.0f);keys[i*2]=spread(x)|(spread(y)<<1)|(spread(z)<<2);}
+__global__ void sortPairs(const float* s,unsigned int* keys,int stage,int stride){int i=(int)(blockIdx.x*blockDim.x+threadIdx.x);int j=i^stride;if(i>=(int)s[23]||j<=i)return;bool up=(i&stage)==0;unsigned int a=keys[i*2],b=keys[j*2],ai=keys[i*2+1],bi=keys[j*2+1];bool greater=a>b||(a==b&&ai>bi);if(greater==up){keys[i*2]=b;keys[i*2+1]=bi;keys[j*2]=a;keys[j*2+1]=ai;}}
+__global__ void leaves(const float* s,const unsigned int* keys,float* nodes){int i=(int)(blockIdx.x*blockDim.x+threadIdx.x);if(i>=(int)s[23])return;int j=(int)keys[i*2+1];Node n;if(j<(int)s[0]){Shape o=readShape(s,j);float3 center=rotateY((o.lo+o.hi)*.5f-o.origin,o.angle)+o.origin,half=(o.hi-o.lo)*.5f;float cs=fabsf(cosf(o.angle)),sn=fabsf(sinf(o.angle));float3 extent=make_float3(cs*half.x+sn*half.z,half.y,sn*half.x+cs*half.z);n.lo=center-extent;n.hi=center+extent;n.shape=j;}else{n.lo=make_float3(1e20f,1e20f,1e20f);n.hi=make_float3(-1e20f,-1e20f,-1e20f);n.shape=-1;}writeNode(nodes,(int)s[23]+i,n);}
 __global__ void parents(float* nodes,int start){int i=(int)(blockIdx.x*blockDim.x+threadIdx.x);if(i>=start)return;int j=start+i;Node a=readNode(nodes,j*2),b=readNode(nodes,j*2+1),n;n.lo=vmin(a.lo,b.lo);n.hi=vmax(a.hi,b.hi);n.shape=-1;writeNode(nodes,j,n);}
 __device__ float bound(float3 ro,float3 inv,float3 lo,float3 hi,float maxT){if(lo.x>hi.x||lo.y>hi.y||lo.z>hi.z)return 1e30f;float3 a=(lo-ro)*inv,b=(hi-ro)*inv;float3 mn=vmin(a,b),mx=vmax(a,b);float near=fmaxf(mn.x,fmaxf(mn.y,mn.z)),far=fminf(mx.x,fminf(mx.y,mx.z));return far>=fmaxf(near,.001f)&&near<maxT?fmaxf(near,.001f):1e30f;}
 struct Hit{float t;int id;float3 n;};
@@ -225,22 +262,24 @@ __device__ Hit trace(const float* s,const float* nodes,float3 ro,float3 rd,float
     float3 inv=make_float3(1/(fabsf(rd.x)<1e-8f?1e-8f:rd.x),1/(fabsf(rd.y)<1e-8f?1e-8f:rd.y),1/(fabsf(rd.z)<1e-8f?1e-8f:rd.z));
     int stack[32],top=0;stack[top++]=1;Hit hit;hit.t=maxT;hit.id=-1;hit.n=make_float3(0,0,0);
     while(top){int i=stack[--top];Node n=readNode(nodes,i);if(bound(ro,inv,n.lo,n.hi,hit.t)>=hit.t)continue;
-        if(i>=CAP){if(n.shape<0)continue;Shape o=readShape(s,n.shape);if(shadow&&(o.mat==GLASS||o.mat==LIGHT))continue;
-            float3 a=(o.lo-ro)*inv,b=(o.hi-ro)*inv,mn=vmin(a,b),mx=vmax(a,b);
-            float near=fmaxf(mn.x,fmaxf(mn.y,mn.z)),far=fminf(mx.x,fminf(mx.y,mx.z));float t=near>.001f?near:far;
-            if(o.mat==LEAF){float3 center=(o.lo+o.hi)*.5f,radius=(o.hi-o.lo)*.5f;float3 q=make_float3((ro.x-center.x)/radius.x,(ro.y-center.y)/radius.y,(ro.z-center.z)/radius.z),d=make_float3(rd.x/radius.x,rd.y/radius.y,rd.z/radius.z);float aa=dot(d,d),bb=dot(q,d),cc=dot(q,q)-1.0f,disc=bb*bb-aa*cc;if(disc<0)continue;t=(-bb-sqrtf(disc))/aa;if(t<.001f)t=(-bb+sqrtf(disc))/aa;}
-            if(t>.001f&&t<hit.t){hit.t=t;hit.id=n.shape;float3 p=ro+rd*t,c=(o.lo+o.hi)*.5f,h=(o.hi-o.lo)*.5f;
+        if(i>=(int)s[23]){if(n.shape<0)continue;Shape o=readShape(s,n.shape);if(shadow&&(o.mat==GLASS||o.mat==LIGHT))continue;
+            float3 localRo=rotateY(ro-o.origin,-o.angle)+o.origin,localRd=rotateY(rd,-o.angle),localInv=make_float3(1/(fabsf(localRd.x)<1e-8f?1e-8f:localRd.x),1/(fabsf(localRd.y)<1e-8f?1e-8f:localRd.y),1/(fabsf(localRd.z)<1e-8f?1e-8f:localRd.z));
+            float3 a=(o.lo-localRo)*localInv,b=(o.hi-localRo)*localInv,mn=vmin(a,b),mx=vmax(a,b);
+            float near=fmaxf(mn.x,fmaxf(mn.y,mn.z)),far=fminf(mx.x,fminf(mx.y,mx.z));if(far<fmaxf(near,.001f))continue;float t=near>.001f?near:far;
+            if(o.mat==LEAF){float3 center=(o.lo+o.hi)*.5f,radius=(o.hi-o.lo)*.5f;float3 q=make_float3((localRo.x-center.x)/radius.x,(localRo.y-center.y)/radius.y,(localRo.z-center.z)/radius.z),d=make_float3(localRd.x/radius.x,localRd.y/radius.y,localRd.z/radius.z);float aa=dot(d,d),bb=dot(q,d),cc=dot(q,q)-1.0f,disc=bb*bb-aa*cc;if(disc<0)continue;t=(-bb-sqrtf(disc))/aa;if(t<.001f)t=(-bb+sqrtf(disc))/aa;}
+            if(t>.001f&&t<hit.t){hit.t=t;hit.id=n.shape;float3 p=localRo+localRd*t,c=(o.lo+o.hi)*.5f,h=(o.hi-o.lo)*.5f;
                 float3 v=make_float3((p.x-c.x)/fmaxf(.00001f,h.x),(p.y-c.y)/fmaxf(.00001f,h.y),(p.z-c.z)/fmaxf(.00001f,h.z));
                 if(fabsf(v.x)>fabsf(v.y)&&fabsf(v.x)>fabsf(v.z))hit.n=make_float3(v.x>0?1.f:-1.f,0,0);else if(fabsf(v.y)>fabsf(v.z))hit.n=make_float3(0,v.y>0?1.f:-1.f,0);else hit.n=make_float3(0,0,v.z>0?1.f:-1.f);
                 if(o.mat==LEAF){float3 center=(o.lo+o.hi)*.5f,radius=(o.hi-o.lo)*.5f;hit.n=norm(make_float3((p.x-center.x)/(radius.x*radius.x),(p.y-center.y)/(radius.y*radius.y),(p.z-center.z)/(radius.z*radius.z)));}
-                if(shadow)return hit;}
+                hit.n=rotateY(hit.n,o.angle);if(shadow)return hit;}
         }else{float a=bound(ro,inv,readNode(nodes,i*2).lo,readNode(nodes,i*2).hi,hit.t),b=bound(ro,inv,readNode(nodes,i*2+1).lo,readNode(nodes,i*2+1).hi,hit.t);
             if(a<b){if(b<hit.t)stack[top++]=i*2+1;if(a<hit.t)stack[top++]=i*2;}else{if(a<hit.t)stack[top++]=i*2;if(b<hit.t)stack[top++]=i*2+1;}}
     }return hit;
 }
 
-__device__ float3 material(Shape o,float3 p,float3 n,float footprint){
-    p=p-o.origin;float3 c=o.color;float u=fabsf(n.x)>.5f?p.z:p.x,v=fabsf(n.y)>.5f?p.z:p.y;
+__device__ float3 material(const float* s,Shape o,float3 p,float3 n,float footprint){
+    if(o.mat==GROUND)return outdoorMaterial(s,p,footprint);
+    p=rotateY(p-o.origin,-o.angle);n=rotateY(n,-o.angle);float3 c=o.color;float u=fabsf(n.x)>.5f?p.z:p.x,v=fabsf(n.y)>.5f?p.z:p.y;
     if(o.mat==WOOD&&n.y<-.5f&&(o.hi.x-o.lo.x>6.0f||o.hi.z-o.lo.z>6.0f))return make_float3(.80f,.79f,.73f);
     float noise=randf(static_cast<unsigned int>(floorf(p.x*180))*73856093u^static_cast<unsigned int>(floorf(p.y*180))*19349663u^static_cast<unsigned int>(floorf(p.z*180))*83492791u);
     float micro=clamp(1-footprint*80);c=c*(1+(noise-.5f)*.06f*micro);
@@ -254,26 +293,27 @@ __device__ float3 material(Shape o,float3 p,float3 n,float footprint){
     if(o.mat==TILE){float fu=fract(u/.45f),fv=fract(v/.45f);if(fminf(fminf(fu,1-fu),fminf(fv,1-fv))<.012f)c=c*.62f;}
     if(o.mat==FABRIC)c=c*(1+.035f*sinf(u*420)*sinf(v*420)*micro);
     if(o.mat==CONCRETE||o.mat==PLASTER)c=c*(.98f+.04f*noise*micro);
-    if(o.mat==ASPHALT){float d=fminf(fabsf(p.x),fabsf(p.z+14));c=c*(.92f+.12f*noise);if(fabsf(p.x)>12||p.z>15)c=make_float3(.22f,.27f,.14f)*(.9f+noise*.2f);}
+    if(o.mat==ASPHALT)c=c*(.92f+.12f*noise);
     return c;
 }
 __device__ float3 sky(float3 rd){float t=clamp(rd.y*.7f+.35f);float3 c=lerp(make_float3(.76f,.79f,.76f),make_float3(.28f,.48f,.68f),t);float sun=powf(fmaxf(0,dot(rd,norm(make_float3(-.7f,1,-.5f)))),900);return c+make_float3(6,4.8f,3.1f)*sun;}
 __device__ float3 shade(const float* s,const float* nodes,float3 ro,float3 rd,Hit h,unsigned int rng,float pixelScale,bool detailed){
-    if(h.id<0)return sky(rd);Shape o=readShape(s,h.id);float3 p=ro+rd*h.t,n=h.n,c=material(o,p,n,h.t*pixelScale);
+    if(h.id<0)return sky(rd);Shape o=readShape(s,h.id);float3 p=ro+rd*h.t,n=h.n,c=material(s,o,p,n,h.t*pixelScale);
     if(o.mat==LIGHT)return o.color*3;
-    float sx=s[5],sz=s[6];int floor=0;for(int f=1;f<(int)s[8];++f)if(p.y+.05f>=floorBase(s,f))floor=f;float base=floorBase(s,floor),ceiling=floorBase(s,floor+1);
-    bool indoors=fabsf(p.x)<9.15f*sx&&p.z>-8.25f*sz&&p.z<11.2f*sz&&p.y<floorBase(s,(int)s[8])-.1f;
+    float3 localP=rotateY(p,-s[18]);float sx=s[5],sz=s[6];int floor=0;for(int f=1;f<(int)s[8];++f)if(p.y+.05f>=floorBase(s,f))floor=f;float base=floorBase(s,floor),ceiling=floorBase(s,floor+1);
+    bool indoors=fabsf(localP.x)<9.15f*sx&&localP.z>-8.25f*sz&&localP.z<11.2f*sz&&p.y<floorBase(s,(int)s[8])-.1f;
     float ambient=indoors?.20f:.40f;float3 illumination=make_float3(ambient*.9f,ambient*.95f,ambient);
     float3 sun=norm(make_float3(-.7f,1,-.5f));float nd=clamp(dot(n,sun));
     if(nd>0){float3 jitter=make_float3(randf(rng)-.5f,randf(rng+1)-.5f,randf(rng+2)-.5f)*.025f;float3 l=norm(sun+jitter);Hit sh=trace(s,nodes,p+n*.003f,l,80,true);if(sh.id<0)illumination=illumination+make_float3(2.4f,2.05f,1.55f)*nd;}
     if(indoors){
-        int side=p.x<0?-1:1,back=p.z/sz<roomSplit(s,floor,side)?0:1;float rz=roomZ(s,floor,side,back)*sz;
-        float3 lamp;if(fabsf(p.x)<1.85f*sx)lamp=make_float3(0,ceiling-.35f,(floorf((p.z/sz+6)/3.5f+.5f)*3.5f-6)*sz);else lamp=make_float3(side*5.2f*sx,ceiling-.3f,rz);
-        if(p.z>5.4f*sz)lamp=make_float3(0,ceiling-.2f,8.8f*sz);
+        int side=localP.x<0?-1:1,back=localP.z/sz<roomSplit(s,floor,side)?0:1;float rz=roomZ(s,floor,side,back)*sz;
+        float3 lamp;if(fabsf(localP.x)<1.85f*sx)lamp=make_float3(0,ceiling-.35f,(floorf((localP.z/sz+6)/3.5f+.5f)*3.5f-6)*sz);else lamp=make_float3(side*5.2f*sx,ceiling-.3f,rz);
+        if(localP.z>5.4f*sz)lamp=make_float3(0,ceiling-.2f,8.8f*sz);
+        lamp=rotateY(lamp,s[18]);
         float3 delta=lamp-p;float dist=sqrtf(dot(delta,delta));float3 l=delta/fmaxf(.01f,dist);float cosine=clamp(dot(n,l));
         if(cosine>0){Hit sh=trace(s,nodes,p+n*.005f,l,dist-.08f,true);if(sh.id<0)illumination=illumination+make_float3(1.0f,.81f,.59f)*(cosine*5.5f/(1+dist*dist*.55f));}
         // Broad diffuse fill from the nearest real window.
-        float3 window=make_float3(side*8.9f*sx,base+1.85f,rz);float3 wl=norm(window-p);
+        float3 window=make_float3(side*8.9f*sx,base+1.85f,rz);window=rotateY(window,s[18]);float3 wl=norm(window-p);
         float facing=clamp(dot(n,wl));illumination=illumination+make_float3(.43f,.51f,.59f)*(facing/(1+fabsf(window.x-p.x)*.12f));
     }
     if(detailed){float3 random=norm(make_float3(randf(rng+3)*2-1,randf(rng+4)*2-1,randf(rng+5)*2-1));float3 ao=norm(n+random);if(dot(ao,n)<.01f)ao=n;
@@ -281,7 +321,7 @@ __device__ float3 shade(const float* s,const float* nodes,float3 ro,float3 rd,Hi
     return c*illumination;
 }
 __global__ void render(const float* s,const float* nodes,const float* C,unsigned int* pixels,float* history,int w,int h,int quality){
-    int x=(int)(blockIdx.x*blockDim.x+threadIdx.x),y=(int)blockIdx.y;if(x>=w||y>=h)return;int i=y*w+x;int sample=(int)C[9];Camera cam=readCam(C);unsigned int rng=mix(i^sample*747796405u);
+    int x=(int)(blockIdx.x*blockDim.x+threadIdx.x),y=(int)blockIdx.y;if(x>=w||y>=h)return;int i=y*w+x;int sample=(int)C[9];if(sample>=64)return;Camera cam=readCam(C);unsigned int rng=mix(i^sample*747796405u);
     float3 f=make_float3(sinf(cam.yaw)*cosf(cam.pitch),sinf(cam.pitch),cosf(cam.yaw)*cosf(cam.pitch)),right=make_float3(cosf(cam.yaw),0,-sinf(cam.yaw)),up=cross(f,right);
     float jx=sample?randf(rng)-.5f:0,jy=sample?randf(rng+7)-.5f:0;
     float sx=(2*(x+.5f+jx)/w-1)*(float(w)/h)*.68f,sy=(1-2*(y+.5f+jy)/h)*.68f;
@@ -323,6 +363,8 @@ __device__ Camera horizontal(const float* s,Camera c,float delta,int axis){
 __global__ void simulate(const float* s,float* C,const float* I,int steps){if(threadIdx.x||blockIdx.x)return;Camera c=readCam(C);Input input;input.forward=I[0];input.side=I[1];input.dx=I[2];input.dy=I[3];input.sprint=(int)I[4];input.jump=(int)I[5];
     float3 startFoot=c.foot;
     c.yaw+=input.dx*.0022f;c.pitch=clamp(c.pitch-input.dy*.0022f,-1.45f,1.45f);
+    if(I[6]>.5f){float3 forward=make_float3(sinf(c.yaw)*cosf(c.pitch),sinf(c.pitch),cosf(c.yaw)*cosf(c.pitch)),right=make_float3(cosf(c.yaw),0,-sinf(c.yaw));float3 d=forward*input.forward+right*input.side+make_float3(0,I[8],0);if(dot(d,d)>0)c.foot=c.foot+norm(d)*I[7]*(input.sprint?3.0f:1.0f)*(float)steps/120.0f;c.foot.y=fmaxf(.2f,c.foot.y);c.vy=0;c.grounded=0;if(dot(c.foot-startFoot,c.foot-startFoot)>.00000001f||input.dx!=0||input.dy!=0)C[9]=0;writeCam(C,c);return;}
+    c.foot=rotateY(c.foot,-s[18]);c.yaw-=s[18];
     for(int t=0;t<steps;++t){float dt=1.f/120;
         if(t==0&&input.jump&&c.grounded){c.vy=4.5f;c.grounded=0;}
         float3 d=make_float3(sinf(c.yaw),0,cosf(c.yaw))*input.forward+make_float3(cosf(c.yaw),0,-sinf(c.yaw))*input.side;
@@ -334,10 +376,10 @@ __global__ void simulate(const float* s,float* C,const float* I,int steps){if(th
             if(c.vy>0&&c.foot.y+1.78f<=o.lo.y+.002f&&next+1.78f>=o.lo.y)next=fminf(next,o.lo.y-1.781f);
         }
         if(c.grounded||fabsf(next-c.foot.y-c.vy*dt)>.0001f)c.vy=0;c.foot.y=next;c.distance+=sqrtf(dot(c.foot-before,c.foot-before));
-    }if(dot(c.foot-startFoot,c.foot-startFoot)>.00000001f||input.dx!=0||input.dy!=0)C[9]=0.0f;writeCam(C,c);
+    }c.foot=rotateY(c.foot,s[18]);c.yaw+=s[18];if(dot(c.foot-startFoot,c.foot-startFoot)>.00000001f||input.dx!=0||input.dy!=0)C[9]=0.0f;writeCam(C,c);
 }
 
-__global__ void accumulate(float* C){if(threadIdx.x||blockIdx.x)return;C[9]=fminf(63.0f,C[9]+1.0f);}
+__global__ void accumulate(float* C){if(threadIdx.x||blockIdx.x)return;C[9]=fminf(64.0f,C[9]+1.0f);}
 
 
 __global__ void initCamera(const float* s,float* C,int view){if(threadIdx.x||blockIdx.x)return;for(int i=0;i<16;++i)C[i]=0.0f;C[2]=-15.0f;
@@ -345,4 +387,6 @@ if(view==1){C[0]=15;C[1]=3;C[2]=-22;C[3]=-.65f;C[4]=.04f;}
 if(view==2){C[0]=.2f;C[2]=-7;C[3]=.08f;C[4]=.02f;}
 if(view==3){C[0]=-2.6f;C[2]=-6.5f;C[3]=-.87f;C[4]=-.06f;}
 if(view==4){C[0]=-.3f;C[2]=3.8f;C[3]=.03f;C[4]=.18f;}
-if(view==5){C[2]=4.7f;C[1]=floorBase(s,(int)s[8]-1);C[3]=PI;C[4]=-.03f;}C[0]*=s[5];C[2]*=s[6];}
+if(view==5){C[2]=4.7f;C[1]=floorBase(s,(int)s[8]-1);C[3]=PI;C[4]=-.03f;}float3 pos=rotateY(make_float3(C[0]*s[5],C[1],C[2]*s[6]),s[18]);C[0]=pos.x;C[2]=pos.z;C[3]+=s[18];}
+
+__global__ void probeOutdoor(const float* s,const float* I,float* Plan){if(threadIdx.x||blockIdx.x)return;float3 c=outdoorMaterial(s,make_float3(I[0],0,I[1]),0);Plan[60]=c.x;Plan[61]=c.y;Plan[62]=c.z;}

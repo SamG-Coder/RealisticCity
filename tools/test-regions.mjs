@@ -1,0 +1,27 @@
+import {chromium} from 'playwright';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import {createServer} from '../server.mjs';
+const server=createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));let browser;await fs.mkdir('captures',{recursive:true});
+try{
+ browser=await chromium.launch({channel:'msedge',headless:true,args:['--enable-unsafe-webgpu']});const page=await browser.newPage({viewport:{width:1440,height:900}});const errors=[];page.on('pageerror',e=>errors.push(String(e)));
+ await page.goto(`http://127.0.0.1:${server.address().port}/?test`);await page.waitForFunction(()=>window.__ready||window.__error,null,{timeout:120000});assert.equal(await page.evaluate(()=>window.__error),undefined);
+ const report=await page.evaluate(async()=>{
+  const e=engine,probe=async(x,z)=>{e.runtime.write(e.buffers.I,new Float32Array([x,z]));e.runtime.batch().dispatch(e.bind('probeOutdoor'),[1]).submit();return Array.from(await e.runtime.read(e.buffers.Plan,Float32Array,12,240));};
+  const samples=[[11,12],[20,5],[-17,4],[0,-14],[321,110],[-345,-99]],before=[];for(const p of samples)before.push(await probe(...p));
+  await e.build(e.seed,1,-1);for(let i=0;i<samples.length;i++){const after=await probe(samples[i][0]-40,samples[i][1]+40);if(after.some((v,j)=>Math.abs(v-before[i][j])>1e-6))throw Error('Terrain moved with building origin');}
+  const independent=await probe(11,12);e.runtime.write(e.buffers.s,new Float32Array([1234,5678]),3*4);if(JSON.stringify(independent)!==JSON.stringify(await probe(11,12)))throw Error('Terrain depends on house key');
+  await e.build(17,1,-1);if(JSON.stringify(independent)===JSON.stringify(await probe(11,12)))throw Error('Outdoor seed variation missing');await e.build(240921,0,0);
+  await e.view(0);await e.setFly(true);e.setCamera([0,30,0,0,0,0,0,0,...Array(8).fill(0)]);e.flySpeed=12;e.step([1,0,0,0,0,0],120);let c=await e.camera();if(Math.abs(c[2]-12)>.01||Math.abs(c[1]-30)>.01)throw Error('Fly movement or gravity wrong');e.flySpeed=24;e.step([1,0,0,0,0,0],120);c=await e.camera();if(Math.abs(c[2]-36)>.01)throw Error('Fly speed wrong');e.step([0,0,0,0,0,0,0,0,1],120);c=await e.camera();if(Math.abs(c[1]-54)>.01)throw Error('Fly rise failed');
+  const world=[c[0]+e.lotX*40,c[2]+e.lotZ*40];await e.stream();c=await e.camera();if(Math.abs(c[0]+e.lotX*40-world[0])>.01||Math.abs(c[2]+e.lotZ*40-world[1])>.01||e.resident)throw Error('Flight streaming changed world position or retained interior');
+  await e.setFly(false);e.step([],120);if(e.flying||Math.abs((await e.camera())[1])>.01)throw Error('Walk reentry failed');
+  await e.resize(320,180);await e.view(2);e.step([],120);for(let i=0;i<64;i++)e.draw();await e.runtime.idle();const frozen=await e.pixels(),history=await e.runtime.read(e.buffers.history);if((await e.camera())[9]!==64)throw Error('Sampler did not converge at 64');
+  for(let i=0;i<256;i++){e.step([],1);e.draw();}await e.runtime.idle();const later=await e.pixels(),laterHistory=await e.runtime.read(e.buffers.history);if(frozen.some((v,i)=>v!==later[i])||history.some((v,i)=>v!==laterHistory[i]))throw Error('Image degrades after sample limit');
+  e.step([0,0,30,0,0,0],1);if((await e.camera())[9]!==0)throw Error('Sampler did not reset on look');e.draw();await e.runtime.idle();if((await e.camera())[9]!==1)throw Error('Sampler failed to restart');
+  await e.build(240921,0,0,false);const start=performance.now();await e.setDistance(10);const buildMs=performance.now()-start;if(e.shapes<90000||e.errors.length)throw Error('Large scene missing');
+  await e.setFly(true);e.setCamera([0,85,-85,.15,-.55,0,0,0,...Array(8).fill(0)]);await e.resize(1920,1080);const frameStart=performance.now();for(let i=0;i<8;i++){e.draw();await e.runtime.idle();}document.body.classList.add('hide-ui');
+  return {samplingStableThrough320Frames:true,samplingResetsOnLook:true,terrainOriginContinuity:true,independentHouseKey:true,worldSeedVariation:true,flight:true,flightStreaming:true,walkReentry:true,exteriors:441,features:e.shapes,buildMs,renderMs:(performance.now()-frameStart)/8,errors:e.errors};
+ });
+ await page.screenshot({path:'captures/regions-flight.png'});
+ // Test actual shortcut and wheel delivery with the embedded-browser fallback.
+ await page.addInitScript(()=>{HTMLCanvasElement.prototype.requestPointerLock=()=>Promise.reject(new DOMException('Unavailable','UnknownError'));});
+ await page.goto(`http://127.0.0.1:${server.address().port}/?resolution=1280`);await page.waitForFunction(()=>window.__ready);await page.locator('#enter').click();await page.waitForFunction(()=>document.body.classList.contains('walking'));await page.keyboard.press('KeyF');await page.waitForFunction(()=>engine.flying);await page.mouse.move(500,650);const speed=await page.evaluate(()=>engine.flySpeed);await page.mouse.wheel(0,-120);await page.waitForFunction(speed=>engine.flySpeed>speed,speed);await page.keyboard.down('KeyE');await page.waitForFunction(()=>engine.camera().then(c=>c[1]>2));await page.keyboard.up('KeyE');await page.keyboard.press('KeyF');await page.waitForFunction(()=>!engine.flying);assert.deepEqual(errors,[]);assert.equal(await page.evaluate(()=>window.__error),undefined);
+ await fs.writeFile('captures/regions-validation.json',JSON.stringify({...report,keyboardAndWheel:true},null,2));console.log(report);console.log('PASS region continuity, flight, 441-building view, keyboard and wheel');
+}finally{await browser?.close();await new Promise(r=>server.close(r));}
