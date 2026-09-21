@@ -15,7 +15,7 @@ try{
    const geometryHash=await hash(await e.runtime.read(e.buffers.s,Float32Array,(32+e.shapes*16)*4));
    const far=[],shading=[];for(let i=0;i<12;i++){
     e.setCamera(camera);e.runtime.batch({timestampWrites:{querySet:query,beginningOfPassWriteIndex:0,endOfPassWriteIndex:1}}).dispatch(e.bind('farVisibility',{w:e.width,h:e.height}),[e.width/64,e.height]).submit();
-    e.runtime.batch().dispatch(e.bind('movingShadows',{w:e.width,h:e.height,enabled:1}),[e.width/64,e.height]).submit();
+    e.runtime.batch().dispatch(e.bind('virtualOpenings',{w:e.width,h:e.height}),[e.width/64,e.height]).dispatch(e.bind('movingShadows',{w:e.width,h:e.height,enabled:1}),[e.width/64,e.height]).submit();
     e.runtime.batch({timestampWrites:{querySet:query,beginningOfPassWriteIndex:2,endOfPassWriteIndex:3}}).dispatch(e.bind('render',{w:e.width,h:e.height,quality:1}),[e.width/64,e.height]).submit();
     const encoder=device.createCommandEncoder();encoder.resolveQuerySet(query,0,4,resolve,0);encoder.copyBufferToBuffer(resolve,0,read,0,32);device.queue.submit([encoder.finish()]);await read.mapAsync(GPUMapMode.READ);const times=new BigUint64Array(read.getMappedRange());if(i>=2){far.push(Number(times[1]-times[0])/1e6);shading.push(Number(times[3]-times[2])/1e6);}read.unmap();
    }

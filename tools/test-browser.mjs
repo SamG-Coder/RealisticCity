@@ -18,11 +18,12 @@ try{browser=await chromium.launch({channel:'msedge',headless:true,args:['--enabl
   const original=await hash();await e.build(240921);const repeated=await hash();if(JSON.stringify(original)!==JSON.stringify(repeated))throw Error('Seed reconstruction mismatch');
   await e.build(17);const alternative=await hash();if(JSON.stringify(original)===JSON.stringify(alternative))throw Error('Seed variation missing');await e.build(240921);
   // Stream away, evict, and reconstruct the same address without growing buffers.
+  const homeYaw=e.layout[13],homeEntrance=world(0,-14);await e.build(240921,1,0,false);const neighbourYaw=e.layout[13],neighbourEntrance=world(0,-14);await e.build(240921,0,0,true);
   const allocation=e.buffers.s.gpuBuffer.size;const before=await hash();const oldShapes=e.shapes;
   e.setCamera([19,0,-19,0,0,0,1,0,...Array(8).fill(0)]);await e.stream();
   if(e.resident)throw Error('Far interior was not evicted');if(e.shapes>=oldShapes)throw Error('Interior geometry was not removed');
-  e.setCamera([40,0,-14,0,0,0,1,0,...Array(8).fill(0)]);await e.stream();if(e.lotX!==1||!e.resident)throw Error('Neighbor did not load');
-  e.setCamera([-40,0,-14,0,0,0,1,0,...Array(8).fill(0)]);await e.stream();if(e.lotX!==0||!e.resident)throw Error('Return did not load');
+  e.setCamera([40+neighbourEntrance[0],0,neighbourEntrance[1],neighbourYaw,0,0,1,0,...Array(8).fill(0)]);await e.stream();if(e.lotX!==1||!e.resident)throw Error('Neighbor did not load');
+  e.setCamera([-40+homeEntrance[0],0,homeEntrance[1],homeYaw,0,0,1,0,...Array(8).fill(0)]);await e.stream();if(e.lotX!==0||!e.resident)throw Error('Return did not load');
   if(JSON.stringify(before)!==JSON.stringify(await hash()))throw Error('Streaming reconstruction differs');
   if(e.buffers.s.gpuBuffer.size!==allocation)throw Error('Streaming grew allocation');
   // A neighbor and an active nonresident lot enumerate identical exterior features.

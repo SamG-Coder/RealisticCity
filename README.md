@@ -28,9 +28,34 @@ A domain-separated hierarchy derives 32-bit keys: world → highway catchment �
 
 The same `emitBuilding()` function enumerates every exterior. The neighboring version does not substitute a proxy facade, roof, or simplified window assembly. This follows the shared-geometry principle in the current Stratum reference. Material coordinates are anchored to each lot, so rebasing does not slide the brick and wood patterns.
 
-The current GPU residency window contains **25, 121, or 441 plot slots and at most one detailed interior**. Walking across a 40m lot boundary recenters the window. The camera rebases to local coordinates while preserving its position in the addressed world. Nearby interiors load; distant interiors are omitted on reconstruction. An 8m load / 11m unload threshold around a conservative building envelope avoids boundary churn. Returning regenerates the same geometry from the same address.
+The current GPU residency window contains **25, 121, or 441 plot slots and at most one detailed interior**. Walking across a 40m lot boundary recenters the window. The camera rebases to local coordinates while preserving its position in the addressed world. Interior residency follows the seeded, rotated entrance: an 8m approach zone loads the interior when looking toward the doorway, with an 11m retention zone to avoid boundary churn. Within 2.5m it loads regardless of viewing direction, so backing through a door remains safe. The interior stays loaded while inside the building footprint. Standing beside an exterior window does not load it. Entrance and interior camera shortcuts prepare collision geometry before moving the player. Returning regenerates the same geometry from the same address.
 
-Outside the cache, rays query building exteriors directly from their addresses, up to an **8km ray horizon**. The build derives a query sink from the same authored `emitBuilding()` grammar, preserving roof, facade, window, and trim geometry without allocating every distant building. A separate GPU visibility pass keeps shader compilation manageable. Primary rays, window continuation, and distant sun occlusion use this path. Detailed interiors still load only nearby; windows into nonresident interiors can reveal the absence of furnishings. Distant ambient/contact lighting is approximate.
+Outside the cache, rays query building exteriors directly from their addresses, up to an **8km ray horizon**. The build derives a query sink from the same authored `emitBuilding()` grammar, preserving roof, facade, window, and trim geometry without allocating every distant building. A separate GPU visibility pass keeps shader compilation manageable. Primary rays and distant sun occlusion use this path. Windows and entrance openings in nonresident buildings use seeded analytic interior mapping. Distant ambient/contact lighting is approximate.
+
+### Virtual windows and entrances
+
+All virtual-interior generation, ray intersections, shading, and entrance residency logic live in **`kernels/building.cu`**, alongside the physical building grammar. No rendering package, texture atlas, WebShader submodule, or runtime dependency has been added. JavaScript schedules the existing GPU work and residency changes.
+
+A window ray intersects a bounded virtual room with walls, a floor, a ceiling, and major furniture. An entrance ray sees a corridor with seeded door recesses, trim, lights, and the first stair flight. These temporary analytic intersections provide perspective as the camera moves; no furniture or partition meshes are inserted into the scene BVH. Existing structural floor slabs remain part of the building shell. The virtual and physical paths share `buildingDNA`, `roomKey`, `roomSplit`, `roomZ`, and `roomType`, preserving footprint, floor heights, room arrangement, and room types. Major furniture uses the physical grammar's positions and palette.
+
+The viewing ray also culls entire furniture, corridor-wall, and stair groups whose bounds cannot be reached before the nearest visible surface. This is geometric rejection, not an angle-based reduction of visible detail. Back-facing virtual openings are skipped, so an unloaded shell does not paint an inward room view when looking outward. The regression compares culled and unculled pixels exactly at multiple viewing angles and checks both looking-away and backwards-entry residency.
+
+This is an approximation of the furnished room, not an identical render: small fittings, some furniture details, full stair geometry, through-room visibility, contact shading, and local lighting are deferred to the physical interior. Lighting and detail can visibly change at the residency transition; there is no crossfade yet. Glass reflection is retained. The virtual opening does not cast a new solid shadow, and the entrance surface has no collision. Once resident, actual windows and open doorways reveal the physical interior normally. Virtual openings are excluded from motion-history reuse and the sun-shadow blur to avoid filtering their view-dependent contents as flat walls.
+
+Run `npm run test:parallax` for full-resolution legacy/virtual/physical captures and frame-time comparisons, entrance preloading, side-window eviction, room-layout consistency, and deterministic regeneration across positive/negative addresses and seed zero. Results are saved under `captures/parallax/`. `engine.parallaxEnabled` is available for diagnostic comparisons; rebuild the scene after changing it. Active feature counts can fall when the interior is absent, but the existing fixed geometry allocation is retained.
+
+The virtual-opening pass is compiled from the same CUDA file and reuses the existing glass buffer; it adds no GPU frame buffer. An isolated Edge/NVIDIA Blackwell comparison at 1920×1080, with four warm-up frames and ten timed frames per view, measured the following median draw-to-GPU-completion times:
+
+| View | Legacy rendering | Virtual interiors enabled | Change in frame time |
+| --- | ---: | ---: | ---: |
+| Exterior | 26.0 ms | 24.9 ms | 4% less |
+| Looking through a window | 20.8 ms | 15.8 ms | 24% less |
+| Facing the entrance | 21.1 ms | 16.9 ms | 20% less |
+| Aerial city | 28.9 ms | 24.4 ms | 16% less |
+| Loaded lobby | 27.9 ms | 28.0 ms | Under 1% more |
+| Loaded room | 28.0 ms | 29.6 ms | 6% more |
+
+The first three legacy cases contain a physical active interior; the virtual cases defer it. Both aerial cases omit the active interior. Both loaded-room cases retain their physical interiors. These are fixed-camera active-frame measurements, not guaranteed displayed FPS. The approach improves these outdoor views but is not a universal speedup. Startup, including shader preparation, took about 46 seconds in this run; the recorded pre-change run took about 33 seconds. Scene generation did not show a consistent speedup. The active scene contained 23,237 features with a virtual active building versus 23,878 with the physical interior and virtual neighbours. Virtual images intentionally differ from the full interior, so the earlier exact-image benchmark cannot serve as a visual baseline for this feature.
 
 Geometry and BVH allocation are fixed at 262,144 feature slots (about 34 MiB combined geometry, BVH, and sort buffers; frame buffers are additional: the distant visibility and glass passes use 80 bytes per render pixel, about 158 MiB at 1920×1080). Sorting and bounds construction use the next power of two of the actual feature count, rather than always processing the allocation ceiling. Eviction overwrites reusable slots; it does not continually allocate buffers. World seeds accept 0–16,777,215; lot coordinates accept −1,000,000–1,000,000. A 32-bit key can repeat at different addresses; it is a deterministic variation key, not a unique address encoding. Save the world seed, address, and generator version for reproducibility.
 
@@ -105,7 +130,7 @@ The benchmark uses 1920×1080, full contact lighting, four fixed views across tw
 
 The visibility pass stores its resident primary hit in the existing per-pixel buffer, so shading does not trace that ray again. Distant shadow visibility is reused, building generation shares one frontage lookup, GPU bindings persist until buffer replacement, and the HUD reuses the streaming camera readback. Resolution, geometry, materials, lighting, 8km horizon and the 64-sample cap remain unchanged.
 
-Measured in Edge on the NVIDIA Blackwell adapter against baseline commit `b4b9634` (median draw-to-completion time; lower is better):
+Earlier measurements, before virtual interiors, in Edge on the NVIDIA Blackwell adapter against baseline commit `b4b9634` (median draw-to-completion time; lower is better):
 
 | View | Before | After | Reduction |
 | --- | ---: | ---: | ---: |
@@ -114,4 +139,4 @@ Measured in Edge on the NVIDIA Blackwell adapter against baseline commit `b4b963
 | flight | 57.5 ms | 28.9 ms | 50% |
 | room-seed17 | 34.9 ms | 26.5 ms | 24% |
 
-All four scenes matched their baseline geometry, pixel and history hashes exactly. These timings include the new motion passes, exclude startup shader compilation, and do not represent a guaranteed displayed frame rate or a moving-camera benchmark. Relative to the previous renderer's 39.0ms aerial result, the descriptor cache and motion passes together measured 28.9ms (26% less time). The aerial view remains dominated by distant procedural visibility (about 20ms of GPU time in this measurement); shader preparation on a fresh browser still takes tens of seconds.
+At that stage, all four scenes matched their baseline geometry, pixel and history hashes exactly. These timings include the motion passes, exclude startup shader compilation, and do not represent a guaranteed displayed frame rate or a moving-camera benchmark. Relative to the previous renderer's 39.0ms aerial result, the descriptor cache and motion passes together measured 28.9ms (26% less time). The aerial view was dominated by distant procedural visibility (about 20ms of GPU time in that measurement); shader preparation on a fresh browser still takes tens of seconds. Record a new baseline when intentionally changing the world or visual model, as with virtual interiors.

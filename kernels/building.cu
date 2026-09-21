@@ -12,6 +12,8 @@
 #define TILE 8
 #define LEAF 9
 #define ASPHALT 10
+#define VIRTUAL_WINDOW 12
+#define VIRTUAL_DOOR 13
 struct Shape { float3 lo; float3 hi; float3 color; float3 origin; float angle; unsigned int id; int mat; int solid; };
 struct Hit{float t;int id;float3 n;Shape feature;float visibility;};
 struct Node { float3 lo; float3 hi; int shape; };
@@ -35,13 +37,15 @@ __device__ unsigned int roomKey(float* s,int floor,int side,int back){return mix
 __device__ float roomSplit(float* s,int floor,int side){return -2.0f+randf(roomKey(s,floor,side,0)^713u)*1.5f;}
 __device__ float roomZ(float* s,int floor,int side,int back){float split=roomSplit(s,floor,side);return back?(split+5.4f)*.5f:(-8.0f+split)*.5f;}
 __device__ int roomType(float* s,int floor,int side,int back){unsigned int key=roomKey(s,floor,side,back);int use=(int)s[7];if(use==1){int v=(int)(mix(key^9821u)%4u);return v==0?1:(v==1?3:(v==2?2:0));}if(use==0&&floor>0)return 4+(int)(mix(key^9821u)%4u);return (int)(mix(key^9821u)%8u);}
+__device__ void buildingDNA(float* s,unsigned int key,float value,unsigned int style){s[3]=(float)(key&65535u);s[4]=(float)(key>>16);s[5]=.90f+.16f*value+.07f*randf(key^101u);s[6]=.93f+.13f*value+.07f*randf(key^102u);s[7]=randf(key^103u)<.8f?0:(float)(1u+mix(key^103u)%2u);s[8]=(float)(value<.35f?3+(int)(mix(key^104u)%2u):(value>.65f?2:2+(int)(mix(key^104u)%2u)));s[9]=(float)(randf(key^105u)<.8f?mix(style^105u)%3u:mix(key^105u)%3u);s[10]=0.0f;for(int f=1;f<=4;++f)s[10+f]=s[9+f]+3.08f+.27f*randf(mix(key^(unsigned int)f)^106u);}
 // Disjoint seed namespaces: region terrain and shared road edges never depend on house DNA.
 __device__ unsigned int regionKey(unsigned int seed,int x,int z){return mix(seed^294731u^mix((unsigned int)x*1597334677u)^mix((unsigned int)z*3812015801u));}
 __device__ float3 rotateY(float3 p,float a){float c=cosf(a),v=sinf(a);return make_float3(c*p.x+v*p.z,p.y,-v*p.x+c*p.z);}
 // Shared exact primitive intersection for resident BVH leaves and procedural queries.
 __device__ Hit intersectShape(Shape o,float3 ro,float3 rd,float limit,bool shadow){
- Hit h;h.id=-1;h.t=limit;h.n=make_float3(0,0,0);if(shadow&&(o.mat==GLASS||o.mat==LIGHT))return h;
+ Hit h;h.id=-1;h.t=limit;h.n=make_float3(0,0,0);if(shadow&&(o.mat==GLASS||o.mat==LIGHT||o.mat==VIRTUAL_WINDOW||o.mat==VIRTUAL_DOOR))return h;
  float3 lr=rotateY(ro-o.origin,-o.angle)+o.origin,ld=rotateY(rd,-o.angle);
+ if(o.mat==VIRTUAL_WINDOW||o.mat==VIRTUAL_DOOR){float cx=((o.lo.x+o.hi.x)*.5f-o.origin.x)/o.color.y;float3 outward=fabsf(cx)>8?make_float3(cx>0?1.f:-1.f,0,0):make_float3(0,0,-1);if(dot(ld,outward)>=-1e-7f)return h;}
  float3 inv=make_float3(1/(fabsf(ld.x)<1e-8f?(ld.x<0?-1e-8f:1e-8f):ld.x),1/(fabsf(ld.y)<1e-8f?(ld.y<0?-1e-8f:1e-8f):ld.y),1/(fabsf(ld.z)<1e-8f?(ld.z<0?-1e-8f:1e-8f):ld.z));
  float3 a=(o.lo-lr)*inv,b=(o.hi-lr)*inv,mn=vmin(a,b),mx=vmax(a,b);float near=fmaxf(mn.x,fmaxf(mn.y,mn.z)),far=fminf(mx.x,fminf(mx.y,mx.z));if(far<fmaxf(near,.001f))return h;float t=near>.001f?near:far;
  float3 center=(o.lo+o.hi)*.5f,radius=(o.hi-o.lo)*.5f;
@@ -201,20 +205,20 @@ __device__ void room(float* s,int floor,int side,int back){
 }
 
 __device__ void sideWindow(float* s,float x,float y,float z){
-    box(s,make_float3(x,y+1.8f,z),make_float3(.025f,.80f,1.05f),GLASS,make_float3(.79f,.86f,.88f));
+    box(s,make_float3(x,y+1.8f,z),make_float3(.025f,.80f,1.05f),s[15]<.5f&&s[25]>.5f?VIRTUAL_WINDOW:GLASS,s[15]<.5f&&s[25]>.5f?make_float3(s[19],s[5],s[6]):make_float3(.79f,.86f,.88f));
     for(int j=-1;j<=1;j+=2){box(s,make_float3(x,y+1.8f+j*.84f,z),make_float3(.14f,.055f,1.14f),METAL,make_float3(.16f,.18f,.18f));
         box(s,make_float3(x,y+1.8f,z+j*1.10f),make_float3(.14f,.88f,.045f),METAL,make_float3(.16f,.18f,.18f));}
     box(s,make_float3(x,y+1.8f,z),make_float3(.13f,.84f,.028f),METAL,make_float3(.16f,.18f,.18f));
     box(s,make_float3(x,y+.92f,z),make_float3(.3f,.06f,1.18f),CONCRETE,make_float3(.65f,.64f,.57f));
 }
-__device__ void emitBuilding(float* s,const float* Districts,unsigned int seed,int lotX,int lotZ,int resident,float offsetX,float offsetZ,int cacheEnabled=1){
+__device__ void emitBuilding(float* s,const float* Districts,unsigned int seed,int lotX,int lotZ,int resident,float offsetX,float offsetZ,int cacheEnabled=1,int virtualEnabled=1){
     Plot plot=cachedPlot(Districts,seed,lotX,lotZ,cacheEnabled);
     s[16]=offsetX;s[17]=offsetZ;s[18]=plot.angle;s[26]=0;unsigned int key=regionKey(neighbourhoodKey(seed,lotX,lotZ)^0x484F5553u,lotX,lotZ);
     s[15]=(float)resident;s[3]=(float)(key&65535u);s[4]=(float)(key>>16);
-    float value=plot.value;unsigned int style=neighbourhoodKey(seed,lotX,lotZ);
-    s[5]=.90f+.16f*value+.07f*randf(key^101u);s[6]=.93f+.13f*value+.07f*randf(key^102u);s[7]=randf(key^103u)<.8f?0:(float)(1u+mix(key^103u)%2u);s[8]=(float)(value<.35f?3+(int)(mix(key^104u)%2u):(value>.65f?2:2+(int)(mix(key^104u)%2u)));s[9]=(float)(randf(key^105u)<.8f?mix(style^105u)%3u:mix(key^105u)%3u);
+    float value=plot.value;s[19]=value;s[25]=(float)virtualEnabled;unsigned int style=neighbourhoodKey(seed,lotX,lotZ);
+    buildingDNA(s,key,value,style);
     if(!plot.available){s[8]=0;s[15]=0;for(int f=0;f<=4;++f)s[10+f]=0;return;}
-    int floors=(int)s[8];s[10]=0.0f;for(int f=1;f<=4;++f)s[10+f]=s[9+f]+3.08f+.27f*randf(mix(key^(unsigned int)f)^106u);
+    int floors=(int)s[8];
     float3 plaster=lerp(make_float3(.64f,.63f,.57f),make_float3(.87f,.85f,.79f),value),brick=make_float3(.40f,.20f,.115f),floorWood=make_float3(.52f,.32f,.17f),dark=make_float3(.13f,.16f,.15f);
     int facade=(int)s[7]==1?CONCRETE:(value>.65f?PLASTER:BRICK);brick=lerp(make_float3(.29f,.12f,.07f),make_float3(.49f,.35f,.22f),randf(key^107u));if(facade==CONCRETE)brick=make_float3(.56f,.58f,.54f);if(facade==PLASTER)brick=plaster;else brick=brick*(.85f+.25f*value);
 
@@ -230,7 +234,7 @@ __device__ void emitBuilding(float* s,const float* Districts,unsigned int seed,i
         // Front facade has an open entrance below, a broad glazed bay above.
         box(s,make_float3(-5.2f,y+storey*.5f,-8.1f),make_float3(3.8f,storey*.5f,.16f),facade,brick);box(s,make_float3(5.2f,y+storey*.5f,-8.1f),make_float3(3.8f,storey*.5f,.16f),facade,brick);
         box(s,make_float3(0,y+(2.7f+storey)*.5f,-8.1f),make_float3(1.4f,(storey-2.7f)*.5f,.16f),CONCRETE,plaster);
-        if(f>0){box(s,make_float3(0,y+.5f,-8.1f),make_float3(1.4f,.5f,.16f),facade,brick);box(s,make_float3(0,y+1.85f,-8.1f),make_float3(1.38f,.85f,.025f),GLASS,make_float3(.8f,.9f,.9f));}
+        if(f>0){box(s,make_float3(0,y+.5f,-8.1f),make_float3(1.4f,.5f,.16f),facade,brick);box(s,make_float3(0,y+1.85f,-8.1f),make_float3(1.38f,.85f,.025f),!resident&&virtualEnabled?VIRTUAL_WINDOW:GLASS,!resident&&virtualEnabled?make_float3(value,s[5],s[6]):make_float3(.8f,.9f,.9f));}
         box(s,make_float3(0,y+storey*.5f,11.1f),make_float3(9.1f,storey*.5f,.15f),facade,brick);
         for(int side=-1;side<=1;side+=2){
             // Side facade uses actual apertures, with solid sills and lintels.
@@ -280,6 +284,7 @@ __device__ void emitBuilding(float* s,const float* Districts,unsigned int seed,i
             box(s,make_float3(0,y+storey*.5f+.52f,10.18f),make_float3(1.8f,.50f,.035f),GLASS,make_float3(.83f,.90f,.89f));
         }
     }
+    if(!resident&&virtualEnabled)box(s,make_float3(0,1.35f,-8.12f),make_float3(1.38f,1.35f,.015f),VIRTUAL_DOOR,make_float3(value,s[5],s[6]),false);
     // Entrance portal, canopy, facade bands and planted setbacks.
     for(int side=-1;side<=1;side+=2){box(s,make_float3(side*1.48f,1.4f,-8.4f),make_float3(.12f,1.4f,.33f),CONCRETE,make_float3(.68f,.64f,.55f));
         box(s,make_float3(side*2.2f,1.85f,-8.29f),make_float3(.065f,.22f,.055f),LIGHT,make_float3(1,.7f,.35f),false);}
@@ -301,12 +306,12 @@ __device__ void emitOutdoors(float* s,unsigned int seed,int x,int z,float ox,flo
 }
 // A bounded residency window enumerates the SAME exterior grammar at every address.
 // No proxy facade or different distant roof. Only hidden interior allocation changes.
-__global__ void generateScene(float* s,const float* Districts,unsigned int seed,int lotX,int lotZ,int resident,int radius,int cacheEnabled=1){
+__global__ void generateScene(float* s,const float* Districts,unsigned int seed,int lotX,int lotZ,int resident,int radius,int cacheEnabled=1,int virtualEnabled=1){
     if(threadIdx.x||blockIdx.x)return;s[0]=0;s[2]=0;s[5]=1;s[6]=1;s[16]=0;s[17]=0;s[3]=0;s[4]=0;s[18]=0;s[26]=0;s[27]=0;s[20]=(float)lotX;s[21]=(float)lotZ;s[22]=(float)seed;s[24]=(float)radius;
     box(s,make_float3(0,-.2f,0),make_float3(20000,.2f,20000),GROUND,make_float3(.26f,.28f,.25f));
     emitOutdoors(s,seed,lotX,lotZ,0,0);
-    emitBuilding(s,Districts,seed,lotX,lotZ,resident,0,0,cacheEnabled);s[1]=s[0];float header[19];for(int i=1;i<19;++i)header[i]=s[i];
-    for(int dz=-radius;dz<=radius;++dz)for(int dx=-radius;dx<=radius;++dx){if(dx!=0||dz!=0){emitOutdoors(s,seed,lotX+dx,lotZ+dz,dx*40.0f,dz*40.0f);emitBuilding(s,Districts,seed,lotX+dx,lotZ+dz,0,dx*40.0f,dz*40.0f,cacheEnabled);}}
+    emitBuilding(s,Districts,seed,lotX,lotZ,resident,0,0,cacheEnabled,virtualEnabled);s[1]=s[0];float header[19];for(int i=1;i<19;++i)header[i]=s[i];
+    for(int dz=-radius;dz<=radius;++dz)for(int dx=-radius;dx<=radius;++dx){if(dx!=0||dz!=0){emitOutdoors(s,seed,lotX+dx,lotZ+dz,dx*40.0f,dz*40.0f);emitBuilding(s,Districts,seed,lotX+dx,lotZ+dz,0,dx*40.0f,dz*40.0f,cacheEnabled,virtualEnabled);}}
     float overflow=s[2];for(int i=1;i<19;++i)s[i]=header[i];s[2]=overflow;
 }
 
@@ -327,15 +332,15 @@ __device__ void queryBox(float* s,float3 p,float3 half,int mat,float3 color,bool
  s[32]=o.lo.x;s[33]=o.lo.y;s[34]=o.lo.z;s[35]=o.hi.x;s[36]=o.hi.y;s[37]=o.hi.z;s[38]=color.x;s[39]=color.y;s[40]=color.z;s[41]=(float)mat;s[42]=solid?1:0;s[43]=s[3];s[44]=s[4];s[45]=s[16];s[46]=s[17];s[47]=s[18];
 }
 // QUERY_GRAMMAR_INSERT
-__device__ Hit queryLot(float* s,const float* Districts,int x,int z,float3 ro,float3 rd,float limit,bool shadow,int cacheEnabled){float q[64];for(int k=0;k<64;++k)q[k]=0;q[27]=1;q[28]=limit;q[48]=ro.x;q[49]=ro.y;q[50]=ro.z;q[51]=rd.x;q[52]=rd.y;q[53]=rd.z;q[54]=shadow?1:0;
- queryBuilding(q,Districts,(unsigned int)s[22],(int)s[20]+x,(int)s[21]+z,0,x*40.0f,z*40.0f,cacheEnabled);
+__device__ Hit queryLot(float* s,const float* Districts,int x,int z,float3 ro,float3 rd,float limit,bool shadow,int cacheEnabled,int virtualEnabled){float q[64];for(int k=0;k<64;++k)q[k]=0;q[27]=1;q[28]=limit;q[48]=ro.x;q[49]=ro.y;q[50]=ro.z;q[51]=rd.x;q[52]=rd.y;q[53]=rd.z;q[54]=shadow?1:0;
+ queryBuilding(q,Districts,(unsigned int)s[22],(int)s[20]+x,(int)s[21]+z,0,x*40.0f,z*40.0f,cacheEnabled,virtualEnabled);
  Hit h;h.id=-1;h.t=limit;h.n=make_float3(0,0,0);if(q[55]>.5f){h.id=CAP;h.t=q[28];h.n=make_float3(q[29],q[30],q[31]);h.feature=readShape(q,0);}return h;}
-__device__ Hit distantQuery(float* s,const float* Districts,float3 ro,float3 rd,Hit hit,bool shadow,int cacheEnabled){
+__device__ Hit distantQuery(float* s,const float* Districts,float3 ro,float3 rd,Hit hit,bool shadow,int cacheEnabled,int virtualEnabled){
  float end=fminf(hit.t,8000.0f),start=.002f;if(ro.y>18){if(rd.y>=0)return hit;start=fmaxf(start,(18-ro.y)/rd.y);}if(ro.y<-.25f){if(rd.y<=0)return hit;start=fmaxf(start,(-.25f-ro.y)/rd.y);}if(rd.y>0)end=fminf(end,(18-ro.y)/rd.y);if(rd.y<0)end=fminf(end,(-.25f-ro.y)/rd.y);if(start>=end)return hit;
  float3 p=ro+rd*start;int x=(int)floorf((p.x+20)/40),z=(int)floorf((p.z+20)/40),stepX=rd.x<0?-1:1,stepZ=rd.z<0?-1:1;
  float tx=fabsf(rd.x)<1e-8f?1e30f:((x*40.0f+stepX*20.0f)-ro.x)/rd.x,tz=fabsf(rd.z)<1e-8f?1e30f:((z*40.0f+stepZ*20.0f)-ro.z)/rd.z,dx=40/fmaxf(1e-8f,fabsf(rd.x)),dz=40/fmaxf(1e-8f,fabsf(rd.z));
  float3 inv=make_float3(1/(fabsf(rd.x)<1e-8f?1e-8f:rd.x),1/(fabsf(rd.y)<1e-8f?1e-8f:rd.y),1/(fabsf(rd.z)<1e-8f?1e-8f:rd.z));
- for(int step=0;step<600&&start<end;++step){if(abs(x)>(int)s[24]||abs(z)>(int)s[24]){float3 lo=make_float3(x*40.0f-19,-.25f,z*40.0f-19),hi=make_float3(x*40.0f+19,18,z*40.0f+19);if(bound(ro,inv,lo,hi,hit.t)<hit.t){Hit q=queryLot(s,Districts,x,z,ro,rd,hit.t,shadow,cacheEnabled);if(q.id>=0){hit=q;end=fminf(end,q.t);if(shadow)return hit;}}}
+ for(int step=0;step<600&&start<end;++step){if(abs(x)>(int)s[24]||abs(z)>(int)s[24]){float3 lo=make_float3(x*40.0f-19,-.25f,z*40.0f-19),hi=make_float3(x*40.0f+19,18,z*40.0f+19);if(bound(ro,inv,lo,hi,hit.t)<hit.t){Hit q=queryLot(s,Districts,x,z,ro,rd,hit.t,shadow,cacheEnabled,virtualEnabled);if(q.id>=0){hit=q;end=fminf(end,q.t);if(shadow)return hit;}}}
  if(tx<tz){start=tx;tx+=dx;x+=stepX;}else{start=tz;tz+=dz;z+=stepZ;}}
  return hit;
 }
@@ -350,8 +355,7 @@ __device__ Hit trace(float* s,const float* nodes,float3 ro,float3 rd,float maxT=
     }return hit;
 }
 
-__device__ float3 material(float* s,Shape o,float3 p,float3 n,float footprint){
-    if(o.mat==GROUND)return outdoorMaterial(s,p,footprint);
+__device__ float3 surfaceMaterial(Shape o,float3 p,float3 n,float footprint){
     p=rotateY(p-o.origin,-o.angle);n=rotateY(n,-o.angle);float3 c=o.color;float u=fabsf(n.x)>.5f?p.z:p.x,v=fabsf(n.y)>.5f?p.z:p.y;
     if(o.mat==WOOD&&n.y<-.5f&&(o.hi.x-o.lo.x>6.0f||o.hi.z-o.lo.z>6.0f))return make_float3(.80f,.79f,.73f);
     float noise=randf(static_cast<unsigned int>(floorf(p.x*180))*73856093u^static_cast<unsigned int>(floorf(p.y*180))*19349663u^static_cast<unsigned int>(floorf(p.z*180))*83492791u);
@@ -369,9 +373,49 @@ __device__ float3 material(float* s,Shape o,float3 p,float3 n,float footprint){
     if(o.mat==ASPHALT)c=c*(.92f+.12f*noise);
     return c;
 }
+__device__ float3 material(float* s,Shape o,float3 p,float3 n,float footprint){if(o.mat==GROUND)return outdoorMaterial(s,p,footprint);return surfaceMaterial(o,p,n,footprint);}
 __device__ float3 sky(float3 rd){float t=clamp(rd.y*.7f+.35f);float3 c=lerp(make_float3(.76f,.79f,.76f),make_float3(.28f,.48f,.68f),t);float sun=powf(fmaxf(0,dot(rd,norm(make_float3(-.7f,1,-.5f)))),900);return c+make_float3(6,4.8f,3.1f)*sun;}
+// Analytic interior mapping lives beside the physical grammar. No mesh allocation,
+// extra shader module, texture atlas, or dependency is needed for a visible opening.
+__device__ void virtualDNA(float* q,Shape opening){for(int i=0;i<32;++i)q[i]=0;buildingDNA(q,opening.id,opening.color.x,0);q[5]=opening.color.y;q[6]=opening.color.z;}
+__global__ void probeResidency(float* s,const float* Districts,const float* C,float* Plan){if(threadIdx.x||blockIdx.x)return;int dx=(int)floorf((C[0]+20)/40),dz=(int)floorf((C[2]+20)/40),x=(int)s[20]+dx,z=(int)s[21]+dz;unsigned int seed=(unsigned int)s[22],key=regionKey(neighbourhoodKey(seed,x,z)^0x484F5553u,x,z);Plot p=cachedPlot(Districts,seed,x,z,1);float sx=.90f+.16f*p.value+.07f*randf(key^101u),sz=.93f+.13f*p.value+.07f*randf(key^102u);float3 local=rotateY(make_float3(C[0]-dx*40,C[1],C[2]-dz*40),-p.angle);float roof=0;int floors=p.value<.35f?3+(int)(mix(key^104u)%2u):(p.value>.65f?2:2+(int)(mix(key^104u)%2u));for(int f=1;f<=floors;++f)roof+=3.08f+.27f*randf(mix(key^(unsigned int)f)^106u);bool retained=s[15]>.5f&&dx==0&&dz==0;bool inside=fabsf(local.x)<9.2f*sx&&local.z>-8.3f*sz&&local.z<11.3f*sz&&local.y<roof+2;float gap=-8.1f*sz-local.z,yaw=C[3]-p.angle;float3 view=make_float3(sinf(yaw)*cosf(C[4]),sinf(C[4]),cosf(yaw)*cosf(C[4])),toDoor=norm(make_float3(-local.x,-.30f-local.y,gap));bool needed=retained||gap<2.5f||dot(view,toDoor)>.25f;bool entrance=needed&&fabsf(local.x)<(retained?5:3.5f)*sx&&local.z>-8.1f*sz-(retained?11:8)&&local.z<-6.1f*sz&&local.y<3;Plan[46]=p.available&&(inside||entrance)?1:0;}
+__device__ Hit virtualBox(float* q,float3 ro,float3 rd,Hit best,float3 center,float3 half,int mat,float3 color){Shape o;center.x*=q[5];center.z*=q[6];half.x*=q[5];half.z*=q[6];o.lo=center-half;o.hi=center+half;o.color=color;o.mat=mat;o.id=buildingKey(q);o.origin=make_float3(0,0,0);o.angle=0;o.solid=0;Hit h=intersectShape(o,ro,rd,best.t,false);return h.id>=0?h:best;}
+__device__ bool virtualBounds(float* q,float3 ro,float3 rd,float limit,float3 center,float3 half){center.x*=q[5];center.z*=q[6];half.x*=q[5];half.z*=q[6];float3 inv=make_float3(1/(fabsf(rd.x)<1e-8f?(rd.x<0?-1e-8f:1e-8f):rd.x),1/(fabsf(rd.y)<1e-8f?(rd.y<0?-1e-8f:1e-8f):rd.y),1/(fabsf(rd.z)<1e-8f?(rd.z<0?-1e-8f:1e-8f):rd.z));return bound(ro,inv,center-half,center+half,limit)<limit;}
+__device__ Hit virtualChair(float* q,float3 ro,float3 rd,Hit h,float x,float y,float z,float3 accent,int face=1){h=virtualBox(q,ro,rd,h,make_float3(x,y+.45f,z),make_float3(.24f,.055f,.23f),FABRIC,accent);h=virtualBox(q,ro,rd,h,make_float3(x,y+.77f,z+face*.20f),make_float3(.24f,.28f,.05f),FABRIC,accent);for(int a=-1;a<=1;a+=2)for(int b=-1;b<=1;b+=2)h=virtualBox(q,ro,rd,h,make_float3(x+a*.18f,y+.21f,z+b*.17f),make_float3(.035f,.21f,.035f),METAL,make_float3(.11f,.13f,.13f));return h;}
+__device__ float3 virtualInterior(float* s,float3 ro,float3 rd,Hit entry,float pixelScale,int angleCulling){
+ Shape opening=hitShape(s,entry);float q[32];virtualDNA(q,opening);float3 origin=rotateY(ro-opening.origin,-opening.angle),direction=rotateY(rd,-opening.angle),start=origin+direction*(entry.t+.07f);float sx=q[5],sz=q[6];int floor=0;for(int f=1;f<(int)q[8];++f)if(start.y>=floorBase(q,f))floor=f;float y=floorBase(q,floor),storey=floorBase(q,floor+1)-y;int side=start.x<0?-1:1;bool corridor=fabsf(start.x/sx)<2||start.z/sz>5.4f;int back=start.z/sz<roomSplit(q,floor,side)?0:1;float z=roomZ(q,floor,side,back),x=side*5.2f;unsigned int key=roomKey(q,floor,side,back);float3 accent=lerp(make_float3(.30f,.39f,.38f),make_float3(.52f,.29f,.17f),randf(key)),plaster=lerp(make_float3(.64f,.63f,.57f),make_float3(.87f,.85f,.79f),opening.color.x);int type=roomType(q,floor,side,back);Hit h;h.id=-1;h.t=80;h.n=make_float3(0,0,0);
+ float nearZ=corridor?-8.0f:(back?roomSplit(q,floor,side)+.10f:-7.94f),farZ=corridor?11.0f:(back?5.3f:roomSplit(q,floor,side)-.10f),cx=corridor?0:side*5.25f,hw=corridor?1.59f:3.44f;
+ h=virtualBox(q,start,direction,h,make_float3(cx,y-.10f,(nearZ+farZ)*.5f),make_float3(hw,.10f,(farZ-nearZ)*.5f),WOOD,make_float3(.52f,.32f,.17f));
+ h=virtualBox(q,start,direction,h,make_float3(cx,y+storey-.10f,(nearZ+farZ)*.5f),make_float3(hw,.10f,(farZ-nearZ)*.5f),PLASTER,make_float3(.80f,.79f,.73f));
+ if(!corridor){
+  for(int end=0;end<2;++end){float a=end?z+.72f:nearZ,b=end?farZ:z-.72f;h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+storey*.5f,(a+b)*.5f),make_float3(.11f,storey*.5f,(b-a)*.5f),PLASTER,plaster);h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+1.2f,z+(end?.76f:-.76f)),make_float3(.16f,1.2f,.045f),WOOD,make_float3(.30f,.20f,.12f));}
+  h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+(2.4f+storey)*.5f,z),make_float3(.11f,(storey-2.4f)*.5f,.72f),PLASTER,plaster);h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+2.43f,z),make_float3(.16f,.045f,.80f),WOOD,make_float3(.30f,.20f,.12f));h=virtualBox(q,start,direction,h,make_float3(side*2.39f,y+1.17f,z+.79f),make_float3(.65f,1.17f,.04f),WOOD,make_float3(.47f,.30f,.17f));h=virtualBox(q,start,direction,h,make_float3(-side*8.8f,y+storey*.5f,z),make_float3(.05f,storey*.5f,.72f),PLASTER,plaster*.65f);
+  for(int end=0;end<2;++end)h=virtualBox(q,start,direction,h,make_float3(cx,y+storey*.5f,end?farZ:nearZ),make_float3(hw,storey*.5f,.01f),PLASTER,plaster);
+  h=virtualBox(q,start,direction,h,make_float3(x,y+.012f,z),make_float3(1.55f,.009f,1.55f),FABRIC,lerp(accent,make_float3(.72f,.64f,.51f),.55f));
+  // Major furniture matches the positions, type and palette in room(). Small
+  // fittings are deferred until residency; these intersections allocate nothing.
+  if(!angleCulling||virtualBounds(q,start,direction,h.t,make_float3(side*5.95f,y+1.11f,z+.05f),make_float3(2.55f,1.12f,2.25f))){
+  if(type==0||type==7){h=virtualBox(q,start,direction,h,make_float3(side*7.1f,y+.30f,z-.15f),make_float3(.62f,.23f,1.22f),FABRIC,accent);h=virtualBox(q,start,direction,h,make_float3(side*7.55f,y+.76f,z-.15f),make_float3(.18f,.5f,1.22f),FABRIC,accent*.8f);h=virtualBox(q,start,direction,h,make_float3(side*4.85f,y+.36f,z),make_float3(.58f,.055f,.9f),WOOD,make_float3(.39f,.23f,.12f));}
+  if(type==1){h=virtualBox(q,start,direction,h,make_float3(side*7.85f,y+.44f,z-.15f),make_float3(.65f,.44f,1.78f),WOOD,make_float3(.34f,.27f,.18f));h=virtualBox(q,start,direction,h,make_float3(side*7.8f,y+.92f,z-.15f),make_float3(.76f,.05f,1.88f),TILE,make_float3(.84f,.81f,.71f));h=virtualBox(q,start,direction,h,make_float3(side*4.4f,y+.76f,z),make_float3(.8f,.045f,.5f),WOOD,make_float3(.55f,.32f,.15f));}
+  if(type==2||type==6){h=virtualBox(q,start,direction,h,make_float3(side*6.9f,y+.76f,z),make_float3(.625f,.045f,1.05f),WOOD,make_float3(.55f,.32f,.15f));h=virtualBox(q,start,direction,h,make_float3(side*6.9f,y+1.12f,z),make_float3(.04f,.3f,.47f),METAL,make_float3(.09f,.1f,.11f));h=virtualBox(q,start,direction,h,make_float3(side*7.8f,y+1.1f,z+1.9f),make_float3(.50f,1.1f,.27f),WOOD,make_float3(.4f,.24f,.12f));}
+  if(type==3)h=virtualBox(q,start,direction,h,make_float3(x,y+.76f,z),make_float3(1.1f,.045f,.6f),WOOD,make_float3(.55f,.32f,.15f));
+  if(type==4||type==5){h=virtualBox(q,start,direction,h,make_float3(side*6.1f,y+.24f,z),make_float3(1.15f,.2f,1.12f),WOOD,make_float3(.28f,.17f,.1f));h=virtualBox(q,start,direction,h,make_float3(side*6.1f,y+.51f,z),make_float3(1.14f,.16f,1.10f),FABRIC,make_float3(.86f,.81f,.69f));h=virtualBox(q,start,direction,h,make_float3(side*7.18f,y+.86f,z),make_float3(.10f,.58f,1.16f),FABRIC,accent);h=virtualBox(q,start,direction,h,make_float3(side*5.7f,y+.69f,z),make_float3(.64f,.035f,1.08f),FABRIC,accent);}
+  if(type==0||type==7){for(int leg=-1;leg<=1;leg+=2)h=virtualBox(q,start,direction,h,make_float3(side*4.85f,y+.16f,z+leg*.6f),make_float3(.035f,.16f,.035f),METAL,make_float3(.11f,.13f,.13f));h=virtualChair(q,start,direction,h,side*4.7f,y,z+1.8f,make_float3(.53f,.47f,.35f));}
+  if(type==1||type==2||type==3||type==6){float tx=type==1?side*4.4f:(type==3?x:side*6.9f),width=type==1?1.6f:(type==3?2.2f:1.25f),depth=type==1?1:(type==3?1.2f:2.1f);for(int a=-1;a<=1;a+=2)for(int b=-1;b<=1;b+=2)h=virtualBox(q,start,direction,h,make_float3(tx+a*(width*.5f-.12f),y+.36f,z+b*(depth*.5f-.12f)),make_float3(.035f,.36f,.035f),METAL,make_float3(.11f,.13f,.13f));if(type==3)for(int j=-1;j<=1;j+=2){h=virtualChair(q,start,direction,h,x+j*.65f,y,z+1,accent);h=virtualChair(q,start,direction,h,x+j*.65f,y,z-1,accent,-1);}else if(type==1){h=virtualChair(q,start,direction,h,tx,y,z+1,accent);h=virtualChair(q,start,direction,h,tx,y,z-1,accent,-1);}else h=virtualChair(q,start,direction,h,side*5.8f,y,z,accent);}
+  }
+  h=virtualBox(q,start,direction,h,make_float3(x,y+storey-.18f,z),make_float3(.68f,.035f,.035f),LIGHT,make_float3(1,.81f,.51f));
+ }else{
+  for(int sideWall=-1;sideWall<=1;sideWall+=2){if(angleCulling&&!virtualBounds(q,start,direction,h.t,make_float3(sideWall*2.4f,y+storey*.5f,-1.3f),make_float3(1.0f,storey*.5f,6.75f)))continue;float last=-8;for(int r=0;r<2;++r){float door=roomZ(q,floor,sideWall,r);h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+storey*.5f,(last+door-.72f)*.5f),make_float3(.11f,storey*.5f,(door-.72f-last)*.5f),PLASTER,plaster);h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+(2.4f+storey)*.5f,door),make_float3(.11f,(storey-2.4f)*.5f,.72f),PLASTER,plaster);h=virtualBox(q,start,direction,h,make_float3(sideWall*2.39f,y+1.17f,door+.79f),make_float3(.65f,1.17f,.04f),WOOD,make_float3(.47f,.30f,.17f));h=virtualBox(q,start,direction,h,make_float3(sideWall*3.2f,y+1.2f,door),make_float3(.02f,1.2f,.72f),PLASTER,plaster*.6f);for(int edge=-1;edge<=1;edge+=2)h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+1.2f,door+edge*.76f),make_float3(.16f,1.2f,.045f),WOOD,make_float3(.30f,.20f,.12f));h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+2.43f,door),make_float3(.16f,.045f,.80f),WOOD,make_float3(.30f,.20f,.12f));last=door+.72f;}h=virtualBox(q,start,direction,h,make_float3(sideWall*1.53f,y+storey-.23f,-1.3f),make_float3(.09f,.065f,6.6f),PLASTER,make_float3(.89f,.86f,.76f));h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+storey*.5f,(last+5.4f)*.5f),make_float3(.11f,storey*.5f,(5.4f-last)*.5f),PLASTER,plaster);}
+  h=virtualBox(q,start,direction,h,make_float3(0,y+storey*.5f,11.0f),make_float3(1.8f,storey*.5f,.10f),PLASTER,plaster);
+  if(floor<(int)q[8]-1&&(!angleCulling||virtualBounds(q,start,direction,h.t,make_float3(-.94f,y+storey*.25f,7.0f),make_float3(.73f,storey*.25f+.16f,1.5f))))for(int j=0;j<10;++j){float height=(j+1)*storey/20.0f;h=virtualBox(q,start,direction,h,make_float3(-.94f,y+height-.08f,5.65f+j*.30f),make_float3(.73f,.08f,.15f),WOOD,make_float3(.43f,.28f,.16f));}
+  for(int j=0;j<4;++j)h=virtualBox(q,start,direction,h,make_float3(0,y+storey-.24f,-6+j*3.5f),make_float3(.45f,.028f,.05f),LIGHT,make_float3(1,.83f,.57f));
+ }
+ float3 color=plaster*.25f;if(h.id>=0){float3 p=start+direction*h.t;Shape o=h.feature;float3 lamp=make_float3((corridor?0:x)*sx,y+storey-.3f,(corridor?floorf((p.z/sz+6)/3.5f+.5f)*3.5f-6:z)*sz);float3 delta=lamp-p;float light=.30f+.80f*clamp(dot(h.n,norm(delta)))/(1+dot(delta,delta)*.035f);color=surfaceMaterial(o,p,h.n,(entry.t+h.t)*pixelScale)*make_float3(light*.96f,light*.98f,light);if(o.mat==LIGHT)color=o.color*3;}
+ if(opening.mat==VIRTUAL_WINDOW){float fresnel=.035f+.65f*powf(1-fabsf(dot(rd,entry.n)),5);color=lerp(color*make_float3(.94f,.98f,.98f),sky(rd-entry.n*(2*dot(rd,entry.n))),fresnel);}return color;
+}
 __device__ float3 shade(float* s,const float* nodes,float3 ro,float3 rd,Hit h,unsigned int rng,float pixelScale,bool detailed,float filteredSun=-1){
     if(h.id<0)return sky(rd);Shape o=hitShape(s,h);float3 p=ro+rd*h.t,n=h.n,c=material(s,o,p,n,h.t*pixelScale);
+    if(o.mat==VIRTUAL_WINDOW||o.mat==VIRTUAL_DOOR)return make_float3(.3f,.3f,.3f);
     if(o.mat==LIGHT)return o.color*3;
     float3 localP=rotateY(p,-s[18]);float sx=s[5],sz=s[6];int floor=0;for(int f=1;f<(int)s[8];++f)if(p.y+.05f>=floorBase(s,f))floor=f;float base=floorBase(s,floor),ceiling=floorBase(s,floor+1);
     bool indoors=fabsf(localP.x)<9.15f*sx&&localP.z>-8.25f*sz&&localP.z<11.2f*sz&&p.y<floorBase(s,(int)s[8])-.1f;
@@ -399,20 +443,22 @@ __device__ Hit shadowSurface(float* s,const float* Far,int i){int b=i*16;Hit h;h
 __global__ void movingShadows(float* s,const float* nodes,const float* C,const float* Far,const float* Glass,const float* MotionHistory,float* Shadows,int w,int h,int enabled=1){
  int x=(int)(blockIdx.x*blockDim.x+threadIdx.x),y=(int)blockIdx.y;if(x>=w||y>=h||C[9]>=64)return;int i=y*w+x,old=w*h*4;Shadows[i]=-1;if(!enabled||C[9]!=0||MotionHistory[old+16]<.5f)return;
  float movement=0;for(int k=0;k<5;++k)movement+=fabsf(C[k]-MotionHistory[old+k]);if(movement<1e-7f)return;
- Hit hit=shadowSurface(s,Far,i);if(hit.id<0||Glass[i*4+3]>0)return;int mat=hit.feature.mat;if(mat==GLASS||mat==LIGHT||mat==LEAF)return;float3 sun=norm(make_float3(-.7f,1,-.5f));if(dot(hit.n,sun)<=0)return;
+ Hit hit=shadowSurface(s,Far,i);if(hit.id<0||Glass[i*4+3]>0)return;int mat=hit.feature.mat;if(mat==GLASS||mat==LIGHT||mat==LEAF||mat==VIRTUAL_WINDOW||mat==VIRTUAL_DOOR)return;float3 sun=norm(make_float3(-.7f,1,-.5f));if(dot(hit.n,sun)<=0)return;
  if(hit.id==CAP){Shadows[i]=Far[i*16+15];return;}
  Camera cam=readCam(C);float3 f=make_float3(sinf(cam.yaw)*cosf(cam.pitch),sinf(cam.pitch),cosf(cam.yaw)*cosf(cam.pitch)),right=make_float3(cosf(cam.yaw),0,-sinf(cam.yaw)),up=cross(f,right);float sx=(2*(x+.5f)/w-1)*(float(w)/h)*.68f,sy=(1-2*(y+.5f)/h)*.68f;float3 p=cam.foot+make_float3(0,1.65f,0)+norm(f+right*sx+up*sy)*hit.t;unsigned int rng=mix(i);float3 jitter=make_float3(randf(rng)-.5f,randf(rng+1)-.5f,randf(rng+2)-.5f)*.025f;Hit sh=trace(s,nodes,p+hit.n*.003f,norm(sun+jitter),80,true);Shadows[i]=sh.id<0?1:0;
 }
 __device__ float blurSun(float* s,const float* Far,const float* Shadows,int x,int y,int w,int h){int i=y*w+x;if(Shadows[i]<0)return -1;Hit center=shadowSurface(s,Far,i);float total=Shadows[i]*4,weight=4;
  for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx){if(dx==0&&dy==0)continue;int nx=x+dx,ny=y+dy;if(nx<0||nx>=w||ny<0||ny>=h)continue;int j=ny*w+nx;if(Shadows[j]<0)continue;Hit other=shadowSurface(s,Far,j);if(other.id<0||other.feature.id!=center.feature.id||other.feature.mat!=center.feature.mat||dot(other.n,center.n)<.999f||fabsf(other.t-center.t)>fmaxf(.05f,center.t*.02f))continue;float a=dx==0||dy==0?2:1;total+=Shadows[j]*a;weight+=a;}return total/weight;
 }
+__device__ Hit primaryHit(float* s,const float* Far,int i){int cached=i*16;Hit hit;hit.id=(int)(-Far[cached])-2;hit.t=Far[cached+1];hit.n=make_float3(Far[cached+2],Far[cached+3],Far[cached+4]);if(Far[cached]>0){int b=i*16;hit.id=CAP;hit.t=Far[b];hit.n=make_float3(Far[b+1],Far[b+2],Far[b+3]);Shape o;o.lo=make_float3(0,0,0);o.hi=make_float3(Far[b+13],0,Far[b+14]);o.color=make_float3(Far[b+4],Far[b+5],Far[b+6]);o.mat=(int)Far[b+7];o.id=(unsigned int)Far[b+8]|((unsigned int)Far[b+9]<<16);o.origin=make_float3(Far[b+10],0,Far[b+11]);o.angle=Far[b+12];o.solid=1;hit.feature=o;hit.visibility=Far[b+15];}return hit;}
 __global__ void render(float* s,const float* nodes,const float* C,const float* Far,const float* Glass,const float* Shadows,unsigned int* pixels,float* history,int w,int h,int quality){
     int x=(int)(blockIdx.x*blockDim.x+threadIdx.x),y=(int)blockIdx.y;if(x>=w||y>=h)return;int i=y*w+x;int sample=(int)C[9];if(sample>=64)return;Camera cam=readCam(C);unsigned int rng=mix(i^sample*747796405u);
     float3 f=make_float3(sinf(cam.yaw)*cosf(cam.pitch),sinf(cam.pitch),cosf(cam.yaw)*cosf(cam.pitch)),right=make_float3(cosf(cam.yaw),0,-sinf(cam.yaw)),up=cross(f,right);
     float jx=sample?randf(rng)-.5f:0,jy=sample?randf(rng+7)-.5f:0;
     float sx=(2*(x+.5f+jx)/w-1)*(float(w)/h)*.68f,sy=(1-2*(y+.5f+jy)/h)*.68f;
-    float3 ro=cam.foot+make_float3(0,1.65f,0),rd=norm(f+right*sx+up*sy);int cached=i*16;Hit hit;hit.id=(int)(-Far[cached])-2;hit.t=Far[cached+1];hit.n=make_float3(Far[cached+2],Far[cached+3],Far[cached+4]);if(Far[cached]>0){int b=i*16;hit.id=CAP;hit.t=Far[b];hit.n=make_float3(Far[b+1],Far[b+2],Far[b+3]);Shape o;o.lo=make_float3(0,0,0);o.hi=make_float3(Far[b+13],0,Far[b+14]);o.color=make_float3(Far[b+4],Far[b+5],Far[b+6]);o.mat=(int)Far[b+7];o.id=(unsigned int)Far[b+8]|((unsigned int)Far[b+9]<<16);o.origin=make_float3(Far[b+10],0,Far[b+11]);o.angle=Far[b+12];o.solid=1;hit.feature=o;hit.visibility=Far[b+15];}float3 color;
-    if(hit.id>=0&&hitShape(s,hit).mat==GLASS&&!(hit.id==CAP&&Glass[i*4+3]>0)){
+    float3 ro=cam.foot+make_float3(0,1.65f,0),rd=norm(f+right*sx+up*sy);Hit hit=primaryHit(s,Far,i);float3 color;
+    if(Glass[i*4+3]<0)color=make_float3(Glass[i*4],Glass[i*4+1],Glass[i*4+2]);
+    else if(hit.id>=0&&hitShape(s,hit).mat==GLASS&&!(hit.id==CAP&&Glass[i*4+3]>0)){
         float3 p=ro+rd*hit.t;Hit through=trace(s,nodes,p+rd*.06f,rd);color=shade(s,nodes,p+rd*.06f,rd,through,rng,1.f/h,quality>0);
         float3 reflected=rd-hit.n*(2*dot(rd,hit.n));float fresnel=.035f+.65f*powf(1-fabsf(dot(rd,hit.n)),5);
         color=lerp(color*make_float3(.94f,.98f,.98f),sky(reflected),fresnel);
@@ -478,24 +524,31 @@ if(view==5){C[2]=4.7f;C[1]=floorBase(s,(int)s[8]-1);C[3]=PI;C[4]=-.03f;}float3 p
 
 __global__ void probeOutdoor(float* s,const float* I,float* Plan){if(threadIdx.x||blockIdx.x)return;float3 c=outdoorMaterial(s,make_float3(I[0],0,I[1]),0);Plan[60]=c.x;Plan[61]=c.y;Plan[62]=c.z;}
 
-__global__ void probeRay(float* s,const float* nodes,const float* Districts,const float* I,float* Plan,int cacheEnabled=1){if(threadIdx.x||blockIdx.x)return;Hit h=trace(s,nodes,make_float3(I[0],I[1],I[2]),norm(make_float3(I[3],I[4],I[5])));h=distantQuery(s,Districts,make_float3(I[0],I[1],I[2]),norm(make_float3(I[3],I[4],I[5])),h,false,cacheEnabled);Plan[56]=h.t;Plan[57]=(float)h.id;if(h.id>=0){Shape o=hitShape(s,h);Plan[58]=(float)o.mat;Plan[59]=o.color.x;Plan[60]=o.color.y;Plan[61]=o.color.z;}}
+__global__ void probeRay(float* s,const float* nodes,const float* Districts,const float* I,float* Plan,int cacheEnabled=1,int virtualEnabled=1){if(threadIdx.x||blockIdx.x)return;Hit h=trace(s,nodes,make_float3(I[0],I[1],I[2]),norm(make_float3(I[3],I[4],I[5])));h=distantQuery(s,Districts,make_float3(I[0],I[1],I[2]),norm(make_float3(I[3],I[4],I[5])),h,false,cacheEnabled,virtualEnabled);Plan[56]=h.t;Plan[57]=(float)h.id;if(h.id>=0){Shape o=hitShape(s,h);Plan[58]=(float)o.mat;Plan[59]=o.color.x;Plan[60]=o.color.y;Plan[61]=o.color.z;}}
 
 __global__ void probeStreet(float* s,const float* I,float* Plan){if(threadIdx.x||blockIdx.x)return;Street r=street((unsigned int)s[22],(int)I[0],(int)I[1],(int)I[2]);Plan[40]=districtValue((unsigned int)s[22],(int)I[0],(int)I[1]);Plan[41]=neighbourhoodValue((unsigned int)s[22],(int)I[0],(int)I[1]);Plan[42]=propertyValue((unsigned int)s[22],(int)I[0],(int)I[1]);Plan[45]=(float)r.terminal;Plan[44]=highwayDistance((unsigned int)s[22],(int)I[0]);Plan[43]=(float)highwayOffset((unsigned int)s[22]);Plan[48]=(float)r.kind;Plan[49]=(float)r.active;Plan[50]=r.a.x;Plan[51]=r.a.z;Plan[52]=r.b.x;Plan[53]=r.b.z;Plan[54]=r.width;Plan[55]=(float)(neighbourhoodKey((unsigned int)s[22],(int)I[0],(int)I[1])&16777215u);}
 
 // Keep procedural traversal in its own compute pass to bound driver compilation work.
-__global__ void farVisibility(float* s,const float* nodes,const float* Districts,const float* C,float* Far,float* Glass,int w,int h,int cacheEnabled=1){
+__global__ void farVisibility(float* s,const float* nodes,const float* Districts,const float* C,float* Far,float* Glass,int w,int h,int cacheEnabled=1,int virtualEnabled=1){
  int x=(int)(blockIdx.x*blockDim.x+threadIdx.x),y=(int)blockIdx.y;if(x>=w||y>=h)return;int i=y*w+x,sample=(int)C[9];if(sample>=64)return;Far[i*16]=0;Glass[i*4+3]=0;
  Camera cam=readCam(C);unsigned int rng=mix(i^sample*747796405u);float3 f=make_float3(sinf(cam.yaw)*cosf(cam.pitch),sinf(cam.pitch),cosf(cam.yaw)*cosf(cam.pitch)),right=make_float3(cosf(cam.yaw),0,-sinf(cam.yaw)),up=cross(f,right);float jx=sample?randf(rng)-.5f:0,jy=sample?randf(rng+7)-.5f:0;float sx=(2*(x+.5f+jx)/w-1)*(float(w)/h)*.68f,sy=(1-2*(y+.5f+jy)/h)*.68f;
  float3 ro=cam.foot+make_float3(0,1.65f,0),rd=norm(f+right*sx+up*sy);Hit hit=trace(s,nodes,ro,rd);
  // Negative marker caches the exact resident hit (including misses) for shading.
  int primary=i*16;Far[primary]=-(float)(hit.id+2);Far[primary+1]=hit.t;Far[primary+2]=hit.n.x;Far[primary+3]=hit.n.y;Far[primary+4]=hit.n.z;
- hit=distantQuery(s,Districts,ro,rd,hit,false,cacheEnabled);bool firstFar=hit.id==CAP;if(!firstFar&&!(hit.id>=0&&hitShape(s,hit).mat==GLASS))return;
- if(hit.feature.mat==GLASS){float3 reflected=rd-hit.n*(2*dot(rd,hit.n)),reflection=sky(reflected);float fresnel=.035f+.65f*powf(1-fabsf(dot(rd,hit.n)),5),offset=hit.t+.06f;float3 throughOrigin=ro+rd*offset;Hit next=trace(s,nodes,throughOrigin,rd);next=distantQuery(s,Districts,throughOrigin,rd,next,false,cacheEnabled);if(next.id>=0){if(!firstFar&&next.id!=CAP)return;Shape feature=hitShape(s,next);hit=next;hit.id=CAP;hit.feature=feature;hit.t+=offset;Glass[i*4]=reflection.x;Glass[i*4+1]=reflection.y;Glass[i*4+2]=reflection.z;Glass[i*4+3]=fresnel;}}
+ hit=distantQuery(s,Districts,ro,rd,hit,false,cacheEnabled,virtualEnabled);bool firstFar=hit.id==CAP;if(!firstFar&&!(hit.id>=0&&hitShape(s,hit).mat==GLASS))return;
+ if(hit.id>=0&&hitShape(s,hit).mat==GLASS){float3 reflected=rd-hit.n*(2*dot(rd,hit.n)),reflection=sky(reflected);float fresnel=.035f+.65f*powf(1-fabsf(dot(rd,hit.n)),5),offset=hit.t+.06f;float3 throughOrigin=ro+rd*offset;Hit next=trace(s,nodes,throughOrigin,rd);next=distantQuery(s,Districts,throughOrigin,rd,next,false,cacheEnabled,virtualEnabled);if(next.id>=0){if(!firstFar&&next.id!=CAP&&hitShape(s,next).mat!=VIRTUAL_WINDOW&&hitShape(s,next).mat!=VIRTUAL_DOOR)return;Shape feature=hitShape(s,next);hit=next;hit.id=CAP;hit.feature=feature;hit.t+=offset;Glass[i*4]=reflection.x;Glass[i*4+1]=reflection.y;Glass[i*4+2]=reflection.z;Glass[i*4+3]=fresnel;}}
  if(hit.id!=CAP)return;Shape o=hit.feature;int b=i*16;
- float3 p=ro+rd*hit.t,sun=norm(make_float3(-.7f,1,-.5f)),jitter=make_float3(randf(rng)-.5f,randf(rng+1)-.5f,randf(rng+2)-.5f)*.025f,l=norm(sun+jitter);Hit sh=trace(s,nodes,p+hit.n*.003f,l,80,true);sh=distantQuery(s,Districts,p+hit.n*.003f,l,sh,true,cacheEnabled);Far[b+15]=sh.id<0?1:0;
+ float3 p=ro+rd*hit.t,sun=norm(make_float3(-.7f,1,-.5f)),jitter=make_float3(randf(rng)-.5f,randf(rng+1)-.5f,randf(rng+2)-.5f)*.025f,l=norm(sun+jitter);Far[b+15]=1;if(o.mat!=VIRTUAL_WINDOW&&o.mat!=VIRTUAL_DOOR){Hit sh=trace(s,nodes,p+hit.n*.003f,l,80,true);sh=distantQuery(s,Districts,p+hit.n*.003f,l,sh,true,cacheEnabled,virtualEnabled);Far[b+15]=sh.id<0?1:0;}
  Far[b]=hit.t;Far[b+1]=hit.n.x;Far[b+2]=hit.n.y;Far[b+3]=hit.n.z;Far[b+4]=o.color.x;Far[b+5]=o.color.y;Far[b+6]=o.color.z;Far[b+7]=(float)o.mat;Far[b+8]=(float)(o.id&65535u);Far[b+9]=(float)(o.id>>16);Far[b+10]=o.origin.x;Far[b+11]=o.origin.z;Far[b+12]=o.angle;Far[b+13]=o.hi.x-o.lo.x;Far[b+14]=o.hi.z-o.lo.z;
 }
 
+// Only opening pixels evaluate room mapping. Reuse the existing glass buffer;
+// negative alpha marks a completed virtual view for the ordinary render pass.
+__global__ void virtualOpenings(float* s,const float* C,const float* Far,float* Glass,int w,int h,int angleCulling=1){
+ int x=(int)(blockIdx.x*blockDim.x+threadIdx.x),y=(int)blockIdx.y;if(x>=w||y>=h||C[9]>=64)return;int i=y*w+x,sample=(int)C[9];Hit hit=primaryHit(s,Far,i);if(hit.id<0)return;int mat=hitShape(s,hit).mat;if(mat!=VIRTUAL_WINDOW&&mat!=VIRTUAL_DOOR)return;
+ Camera cam=readCam(C);unsigned int rng=mix(i^sample*747796405u);float3 f=make_float3(sinf(cam.yaw)*cosf(cam.pitch),sinf(cam.pitch),cosf(cam.yaw)*cosf(cam.pitch)),right=make_float3(cosf(cam.yaw),0,-sinf(cam.yaw)),up=cross(f,right);float jx=sample?randf(rng)-.5f:0,jy=sample?randf(rng+7)-.5f:0;float sx=(2*(x+.5f+jx)/w-1)*(float(w)/h)*.68f,sy=(1-2*(y+.5f+jy)/h)*.68f;float3 ro=cam.foot+make_float3(0,1.65f,0),rd=norm(f+right*sx+up*sy),color=virtualInterior(s,ro,rd,hit,1.f/h,angleCulling);
+ if(Glass[i*4+3]>0)color=lerp(color*make_float3(.94f,.98f,.98f),make_float3(Glass[i*4],Glass[i*4+1],Glass[i*4+2]),Glass[i*4+3]);Glass[i*4]=color.x;Glass[i*4+1]=color.y;Glass[i*4+2]=color.z;Glass[i*4+3]=-1;
+}
 // Reproject only verified diffuse surfaces. Full current visibility/shading still runs.
 // Far is reused as the current surface buffer after render has consumed its ray records.
 __global__ void temporalResolve(float* s,const float* C,float* Far,const float* Glass,float* history,const float* MotionHistory,const float* MotionSurface,unsigned int* pixels,int w,int h,int enabled=1){
@@ -503,7 +556,7 @@ __global__ void temporalResolve(float* s,const float* C,float* Far,const float* 
  if(mark>0){t=Far[b];n=make_float3(Far[b+1],Far[b+2],Far[b+3]);mat=(int)Far[b+7];key=(unsigned int)Far[b+8]|((unsigned int)Far[b+9]<<16);}else{int id=(int)(-mark)-2;t=Far[b+1];n=make_float3(Far[b+2],Far[b+3],Far[b+4]);if(id>=0){Shape o=readShape(s,id);mat=o.mat;key=o.id;}}
  Camera cam=readCam(C);int sample=(int)C[9];unsigned int rng=mix(i^sample*747796405u);float3 f=make_float3(sinf(cam.yaw)*cosf(cam.pitch),sinf(cam.pitch),cosf(cam.yaw)*cosf(cam.pitch)),right=make_float3(cosf(cam.yaw),0,-sinf(cam.yaw)),up=cross(f,right);float jx=sample?randf(rng)-.5f:0,jy=sample?randf(rng+7)-.5f:0;
  float sx=(2*(x+.5f+jx)/w-1)*(float(w)/h)*.68f,sy=(1-2*(y+.5f+jy)/h)*.68f;float3 point=cam.foot+make_float3(0,1.65f,0)+norm(f+right*sx+up*sy)*t;
- bool eligible=mat>=0&&mat!=GLASS&&mat!=METAL&&mat!=LIGHT&&mat!=LEAF&&Glass[i*4+3]==0;
+ bool eligible=mat>=0&&mat!=GLASS&&mat!=VIRTUAL_WINDOW&&mat!=VIRTUAL_DOOR&&mat!=METAL&&mat!=LIGHT&&mat!=LEAF&&Glass[i*4+3]==0;
  float identity=(float)((key&65535u)+(unsigned int)(mat<0?0:mat)*65536u);history[i*4+3]=0;
  if(eligible&&sample==0&&MotionHistory[old+16]>.5f){
   float3 oldFoot=make_float3(MotionHistory[old],MotionHistory[old+1],MotionHistory[old+2]),move=cam.foot-oldFoot;float yaw=MotionHistory[old+3],pitch=MotionHistory[old+4];float3 pf=make_float3(sinf(yaw)*cosf(pitch),sinf(pitch),cosf(yaw)*cosf(pitch)),pr=make_float3(cosf(yaw),0,-sinf(yaw)),pu=cross(pf,pr),delta=point-oldFoot-make_float3(0,1.65f,0);float z=dot(delta,pf),motion=dot(move,move);
