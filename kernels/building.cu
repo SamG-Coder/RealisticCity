@@ -202,11 +202,12 @@ __device__ void sideWindow(float* s,float x,float y,float z){
     box(s,make_float3(x,y+.92f,z),make_float3(.3f,.06f,1.18f),CONCRETE,make_float3(.65f,.64f,.57f));
 }
 __device__ void emitBuilding(float* s,unsigned int seed,int lotX,int lotZ,int resident,float offsetX,float offsetZ){
-    s[16]=offsetX;s[17]=offsetZ;s[18]=buildingAngle(seed,lotX,lotZ);s[26]=0;unsigned int key=regionKey(neighbourhoodKey(seed,lotX,lotZ)^0x484F5553u,lotX,lotZ);
+    Street access=frontage(seed,lotX,lotZ);float3 center=make_float3(lotX*40.0f,0,lotZ*40.0f),delta=closestStreet(access,center)-center,normal=norm(delta);
+    s[16]=offsetX;s[17]=offsetZ;s[18]=atan2f(-normal.x,-normal.z);s[26]=0;unsigned int key=regionKey(neighbourhoodKey(seed,lotX,lotZ)^0x484F5553u,lotX,lotZ);
     s[15]=(float)resident;s[3]=(float)(key&65535u);s[4]=(float)(key>>16);
     float value=propertyValue(seed,lotX,lotZ);unsigned int style=neighbourhoodKey(seed,lotX,lotZ);
     s[5]=.90f+.16f*value+.07f*randf(key^101u);s[6]=.93f+.13f*value+.07f*randf(key^102u);s[7]=randf(key^103u)<.8f?0:(float)(1u+mix(key^103u)%2u);s[8]=(float)(value<.35f?3+(int)(mix(key^104u)%2u):(value>.65f?2:2+(int)(mix(key^104u)%2u)));s[9]=(float)(randf(key^105u)<.8f?mix(style^105u)%3u:mix(key^105u)%3u);
-    if(!buildablePlot(seed,lotX,lotZ)){s[8]=0;s[15]=0;for(int f=0;f<=4;++f)s[10+f]=0;return;}
+    if(!(access.active&&access.kind!=6&&dot(delta,delta)<35.0f*35.0f)){s[8]=0;s[15]=0;for(int f=0;f<=4;++f)s[10+f]=0;return;}
     int floors=(int)s[8];s[10]=0.0f;for(int f=1;f<=4;++f)s[10+f]=s[9+f]+3.08f+.27f*randf(mix(key^(unsigned int)f)^106u);
     float3 plaster=lerp(make_float3(.64f,.63f,.57f),make_float3(.87f,.85f,.79f),value),brick=make_float3(.40f,.20f,.115f),floorWood=make_float3(.52f,.32f,.17f),dark=make_float3(.13f,.16f,.15f);
     int facade=(int)s[7]==1?CONCRETE:(value>.65f?PLASTER:BRICK);brick=lerp(make_float3(.29f,.12f,.07f),make_float3(.49f,.35f,.22f),randf(key^107u));if(facade==CONCRETE)brick=make_float3(.56f,.58f,.54f);if(facade==PLASTER)brick=plaster;else brick=brick*(.85f+.25f*value);
@@ -370,7 +371,7 @@ __device__ float3 shade(float* s,const float* nodes,float3 ro,float3 rd,Hit h,un
     bool indoors=fabsf(localP.x)<9.15f*sx&&localP.z>-8.25f*sz&&localP.z<11.2f*sz&&p.y<floorBase(s,(int)s[8])-.1f;
     float ambient=indoors?.20f:.40f;float3 illumination=make_float3(ambient*.9f,ambient*.95f,ambient);
     float3 sun=norm(make_float3(-.7f,1,-.5f));float nd=clamp(dot(n,sun));
-    if(nd>0){float3 jitter=make_float3(randf(rng)-.5f,randf(rng+1)-.5f,randf(rng+2)-.5f)*.025f;float3 l=norm(sun+jitter);Hit sh=trace(s,nodes,p+n*.003f,l,80,true);if((h.id==CAP&&h.visibility>.5f)||(h.id!=CAP&&sh.id<0))illumination=illumination+make_float3(2.4f,2.05f,1.55f)*nd;}
+    if(nd>0){float3 jitter=make_float3(randf(rng)-.5f,randf(rng+1)-.5f,randf(rng+2)-.5f)*.025f;float3 l=norm(sun+jitter);bool visible=false;if(h.id==CAP)visible=h.visibility>.5f;else{Hit sh=trace(s,nodes,p+n*.003f,l,80,true);visible=sh.id<0;}if(visible)illumination=illumination+make_float3(2.4f,2.05f,1.55f)*nd;}
     if(indoors){
         int side=localP.x<0?-1:1,back=localP.z/sz<roomSplit(s,floor,side)?0:1;float rz=roomZ(s,floor,side,back)*sz;
         float3 lamp;if(fabsf(localP.x)<1.85f*sx)lamp=make_float3(0,ceiling-.35f,(floorf((localP.z/sz+6)/3.5f+.5f)*3.5f-6)*sz);else lamp=make_float3(side*5.2f*sx,ceiling-.3f,rz);
@@ -391,7 +392,7 @@ __global__ void render(float* s,const float* nodes,const float* C,const float* F
     float3 f=make_float3(sinf(cam.yaw)*cosf(cam.pitch),sinf(cam.pitch),cosf(cam.yaw)*cosf(cam.pitch)),right=make_float3(cosf(cam.yaw),0,-sinf(cam.yaw)),up=cross(f,right);
     float jx=sample?randf(rng)-.5f:0,jy=sample?randf(rng+7)-.5f:0;
     float sx=(2*(x+.5f+jx)/w-1)*(float(w)/h)*.68f,sy=(1-2*(y+.5f+jy)/h)*.68f;
-    float3 ro=cam.foot+make_float3(0,1.65f,0),rd=norm(f+right*sx+up*sy);Hit hit=trace(s,nodes,ro,rd);if(Far[i*16]>0&&(Far[i*16]<hit.t||Glass[i*4+3]>0)){int b=i*16;hit.id=CAP;hit.t=Far[b];hit.n=make_float3(Far[b+1],Far[b+2],Far[b+3]);Shape o;o.lo=make_float3(0,0,0);o.hi=make_float3(Far[b+13],0,Far[b+14]);o.color=make_float3(Far[b+4],Far[b+5],Far[b+6]);o.mat=(int)Far[b+7];o.id=(unsigned int)Far[b+8]|((unsigned int)Far[b+9]<<16);o.origin=make_float3(Far[b+10],0,Far[b+11]);o.angle=Far[b+12];o.solid=1;hit.feature=o;hit.visibility=Far[b+15];}float3 color;
+    float3 ro=cam.foot+make_float3(0,1.65f,0),rd=norm(f+right*sx+up*sy);int cached=i*16;Hit hit;hit.id=(int)(-Far[cached])-2;hit.t=Far[cached+1];hit.n=make_float3(Far[cached+2],Far[cached+3],Far[cached+4]);if(Far[cached]>0){int b=i*16;hit.id=CAP;hit.t=Far[b];hit.n=make_float3(Far[b+1],Far[b+2],Far[b+3]);Shape o;o.lo=make_float3(0,0,0);o.hi=make_float3(Far[b+13],0,Far[b+14]);o.color=make_float3(Far[b+4],Far[b+5],Far[b+6]);o.mat=(int)Far[b+7];o.id=(unsigned int)Far[b+8]|((unsigned int)Far[b+9]<<16);o.origin=make_float3(Far[b+10],0,Far[b+11]);o.angle=Far[b+12];o.solid=1;hit.feature=o;hit.visibility=Far[b+15];}float3 color;
     if(hit.id>=0&&hitShape(s,hit).mat==GLASS&&!(hit.id==CAP&&Glass[i*4+3]>0)){
         float3 p=ro+rd*hit.t;Hit through=trace(s,nodes,p+rd*.06f,rd);color=shade(s,nodes,p+rd*.06f,rd,through,rng,1.f/h,quality>0);
         float3 reflected=rd-hit.n*(2*dot(rd,hit.n));float fresnel=.035f+.65f*powf(1-fabsf(dot(rd,hit.n)),5);
@@ -466,7 +467,10 @@ __global__ void probeStreet(float* s,const float* I,float* Plan){if(threadIdx.x|
 __global__ void farVisibility(float* s,const float* nodes,const float* C,float* Far,float* Glass,int w,int h){
  int x=(int)(blockIdx.x*blockDim.x+threadIdx.x),y=(int)blockIdx.y;if(x>=w||y>=h)return;int i=y*w+x,sample=(int)C[9];if(sample>=64)return;Far[i*16]=0;Glass[i*4+3]=0;
  Camera cam=readCam(C);unsigned int rng=mix(i^sample*747796405u);float3 f=make_float3(sinf(cam.yaw)*cosf(cam.pitch),sinf(cam.pitch),cosf(cam.yaw)*cosf(cam.pitch)),right=make_float3(cosf(cam.yaw),0,-sinf(cam.yaw)),up=cross(f,right);float jx=sample?randf(rng)-.5f:0,jy=sample?randf(rng+7)-.5f:0;float sx=(2*(x+.5f+jx)/w-1)*(float(w)/h)*.68f,sy=(1-2*(y+.5f+jy)/h)*.68f;
- float3 ro=cam.foot+make_float3(0,1.65f,0),rd=norm(f+right*sx+up*sy);Hit hit=trace(s,nodes,ro,rd);hit=distantQuery(s,ro,rd,hit,false);bool firstFar=hit.id==CAP;if(!firstFar&&!(hit.id>=0&&hitShape(s,hit).mat==GLASS))return;
+ float3 ro=cam.foot+make_float3(0,1.65f,0),rd=norm(f+right*sx+up*sy);Hit hit=trace(s,nodes,ro,rd);
+ // Negative marker caches the exact resident hit (including misses) for shading.
+ int primary=i*16;Far[primary]=-(float)(hit.id+2);Far[primary+1]=hit.t;Far[primary+2]=hit.n.x;Far[primary+3]=hit.n.y;Far[primary+4]=hit.n.z;
+ hit=distantQuery(s,ro,rd,hit,false);bool firstFar=hit.id==CAP;if(!firstFar&&!(hit.id>=0&&hitShape(s,hit).mat==GLASS))return;
  if(hit.feature.mat==GLASS){float3 reflected=rd-hit.n*(2*dot(rd,hit.n)),reflection=sky(reflected);float fresnel=.035f+.65f*powf(1-fabsf(dot(rd,hit.n)),5),offset=hit.t+.06f;float3 throughOrigin=ro+rd*offset;Hit next=trace(s,nodes,throughOrigin,rd);next=distantQuery(s,throughOrigin,rd,next,false);if(next.id>=0){if(!firstFar&&next.id!=CAP)return;Shape feature=hitShape(s,next);hit=next;hit.id=CAP;hit.feature=feature;hit.t+=offset;Glass[i*4]=reflection.x;Glass[i*4+1]=reflection.y;Glass[i*4+2]=reflection.z;Glass[i*4+3]=fresnel;}}
  if(hit.id!=CAP)return;Shape o=hit.feature;int b=i*16;
  float3 p=ro+rd*hit.t,sun=norm(make_float3(-.7f,1,-.5f)),jitter=make_float3(randf(rng)-.5f,randf(rng+1)-.5f,randf(rng+2)-.5f)*.025f,l=norm(sun+jitter);Hit sh=trace(s,nodes,p+hit.n*.003f,l,80,true);sh=distantQuery(s,p+hit.n*.003f,l,sh,true);Far[b+15]=sh.id<0?1:0;

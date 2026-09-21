@@ -8,7 +8,9 @@
     "test": "node tools/test-browser.mjs",
     "test:controls": "node tools/test-controls.mjs",
     "test:regions": "node tools/test-regions.mjs",
-    "test:courts": "node tools/test-courts-query.mjs"
+    "test:courts": "node tools/test-courts-query.mjs",
+    "profile:baseline": "node tools/profile-render.mjs baseline",
+    "profile:compare": "node tools/profile-render.mjs candidate"
   },
   "devDependencies": {
     "playwright": "1.56.1"

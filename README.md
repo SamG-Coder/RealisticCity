@@ -80,3 +80,22 @@ Each 1.28km district receives a seeded economic design index. Neighbourhood anch
 Value influences footprint, floor count and exterior finish; neighbourhood seeds bias roof style. Higher values favour larger footprints, two-storey homes and lighter plaster, while lower values favour compact three/four-storey buildings. Each address remains deterministic. The panel shows the home index (0–100) and district $/$$/$$$ band, not a real currency estimate. Camera distance never changes these values. `test:courts` checks economic clustering, adjacent-versus-distant value differences, road-width hierarchy and cached/query geometry agreement.
 
 Court topology checks verify three connected access segments, one turning bulb, more than 100m of stem, no crossing street through the stem, and one highway access per district corridor section. Open plots regenerate as open space in both the resident and distant query paths.
+
+## Performance profiling
+
+`npm run profile:baseline` records an image/geometry reference and timings. After a renderer change, `npm run profile:compare` checks against that saved reference. Run them separately on the same GPU/browser, without other GPU benchmarks running. Reports are saved to `captures/performance-baseline.json` and `captures/performance-candidate.json`. The benchmark requires WebGPU timestamp-query support.
+
+The benchmark uses 1920×1080, full contact lighting, four fixed views across two seeds, two warm-up iterations, and ten measured iterations. GPU timestamp queries isolate visibility and shading; wall-clock medians cover normal draw submission through queue completion. SHA-256 comparisons cover generated geometry, pixels and floating-point accumulation history after eight samples. This verifies the sampled scenes exactly, rather than relying on visual similarity. It is not a guarantee of identical output on different GPU drivers.
+
+The visibility pass stores its resident primary hit in the existing per-pixel buffer, so shading does not trace that ray again. Distant shadow visibility is reused, building generation shares one frontage lookup, GPU bindings persist until buffer replacement, and the HUD reuses the streaming camera readback. Resolution, geometry, materials, lighting, 8km horizon and the 64-sample cap remain unchanged.
+
+Measured in Edge on the NVIDIA Blackwell adapter against baseline commit `b4b9634` (median draw-to-completion time; lower is better):
+
+| View | Before | After | Reduction |
+| --- | ---: | ---: | ---: |
+| exterior | 38.0 ms | 27.0 ms | 29% |
+| lobby | 33.9 ms | 25.9 ms | 24% |
+| flight | 57.5 ms | 39.0 ms | 32% |
+| room-seed17 | 34.9 ms | 26.0 ms | 26% |
+
+All four scenes matched their baseline geometry, pixel and history hashes exactly. These timings exclude startup shader compilation and do not represent a guaranteed displayed frame rate. The aerial view remains dominated by distant procedural visibility (about 30ms of GPU time in this measurement); shader preparation on a fresh browser still takes tens of seconds.
