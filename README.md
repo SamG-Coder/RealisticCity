@@ -2,6 +2,10 @@
 
 A browser FPS walkthrough of address-seeded buildings using [SamG-Coder/cuda-webshader](https://github.com/SamG-Coder/cuda-webshader). CUDA source supplies building generation, ray queries, procedural materials, lighting, the acceleration structure, gravity, stair stepping, and player collision. JavaScript supplies browser input, dispatch, residency scheduling, and the interface.
 
+**[Try the browser demo](https://samg-coder.github.io/RealisticCity/)** — requires a browser and GPU with WebGPU support.
+
+[![Seeded neighbourhood with a court, walkable buildings and a distant city skyline](docs/images/seeded-district.png)](https://samg-coder.github.io/RealisticCity/)
+
 ## Run
 
 Requires Node.js 20+ and a browser with working WebGPU. Tested with Microsoft Edge on an NVIDIA Blackwell adapter.
@@ -16,7 +20,7 @@ npm start
 
 Open http://127.0.0.1:8787 and click **Walk inside**. `START.ps1` is also supplied. No native CUDA toolkit is required. Generated WGSL comes from `kernels/building.cu` through the user's compiler.
 
-If you cloned without submodules, run `git submodule update --init --recursive` before building. Generated shader artifacts are rebuilt locally. This repository does not configure GitHub Pages or a deployment workflow.
+If you cloned without submodules, run `git submodule update --init --recursive` before building. Generated shader artifacts are rebuilt locally. GitHub Pages publishes the browser demo automatically from `main`. The workflow checks out the pinned compiler submodule, builds the shaders, and deploys the static browser assets. Run `npm run build:pages` to produce the same `dist/` artifact locally.
 
 ## Address and residency
 
