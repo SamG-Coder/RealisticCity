@@ -14,6 +14,15 @@
 #define ASPHALT 10
 #define VIRTUAL_WINDOW 12
 #define VIRTUAL_DOOR 13
+#define UPHOLSTERY 14
+#define CERAMIC 15
+#define BASIN 16
+#define FLOOR_WOOD 17
+#define FLOOR_PARQUET 18
+#define FLOOR_TILE 19
+#define FLOOR_CHECK 20
+#define FLOOR_CARPET 21
+#define FLOOR_TERRAZZO 22
 struct Shape { float3 lo; float3 hi; float3 color; float3 origin; float angle; unsigned int id; int mat; int solid; };
 struct Hit{float t;int id;float3 n;Shape feature;float visibility;};
 struct Node { float3 lo; float3 hi; int shape; };
@@ -34,13 +43,25 @@ __device__ float fract(float x){return x-floorf(x);}
 __device__ unsigned int buildingKey(float* s){return (unsigned int)s[3]|((unsigned int)s[4]<<16);}
 __device__ float floorBase(float* s,int floor){return s[10+floor];}
 __device__ unsigned int roomKey(float* s,int floor,int side,int back){return mix(buildingKey(s)^mix((unsigned int)floor*101u+(side<0?17u:29u)+(unsigned int)back*43u));}
-__device__ float roomSplit(float* s,int floor,int side){return -2.0f+randf(roomKey(s,floor,side,0)^713u)*1.5f;}
+// Address-derived proportions are shared by geometry, residency and virtual rooms.
+__device__ float houseWidth(unsigned int key,float value){int form=(int)(mix(key^811u)%3u);return (form==0?.92f:(form==1?1.06f:.98f))+.035f*value+.025f*randf(key^101u);}
+__device__ float houseDepth(unsigned int key,float value){int form=(int)(mix(key^811u)%3u);return (form==0?1.08f:(form==1?.93f:1.0f))+.025f*value+.025f*randf(key^102u);}
+__device__ float3 roomAccent(unsigned int key){int palette=(int)(mix(key^817u)%5u);float3 c=palette==0?make_float3(.23f,.36f,.44f):(palette==1?make_float3(.38f,.44f,.28f):(palette==2?make_float3(.53f,.28f,.22f):(palette==3?make_float3(.61f,.47f,.27f):make_float3(.55f,.51f,.44f))));return c*(.88f+.24f*randf(key));}
+__device__ float roomSplit(float* s,int floor,int side){return -3.25f+randf(roomKey(s,floor,side,0)^713u)*3.9f;}
 __device__ float roomZ(float* s,int floor,int side,int back){float split=roomSplit(s,floor,side);return back?(split+5.4f)*.5f:(-8.0f+split)*.5f;}
-__device__ int roomType(float* s,int floor,int side,int back){unsigned int key=roomKey(s,floor,side,back);int use=(int)s[7];if(use==1){int v=(int)(mix(key^9821u)%4u);return v==0?1:(v==1?3:(v==2?2:0));}if(use==0&&floor>0)return 4+(int)(mix(key^9821u)%4u);return (int)(mix(key^9821u)%8u);}
-__device__ void buildingDNA(float* s,unsigned int key,float value,unsigned int style){s[3]=(float)(key&65535u);s[4]=(float)(key>>16);s[5]=.90f+.16f*value+.07f*randf(key^101u);s[6]=.93f+.13f*value+.07f*randf(key^102u);s[7]=randf(key^103u)<.8f?0:(float)(1u+mix(key^103u)%2u);s[8]=(float)(value<.35f?3+(int)(mix(key^104u)%2u):(value>.65f?2:2+(int)(mix(key^104u)%2u)));s[9]=(float)(randf(key^105u)<.8f?mix(style^105u)%3u:mix(key^105u)%3u);s[10]=0.0f;for(int f=1;f<=4;++f)s[10+f]=s[9+f]+3.08f+.27f*randf(mix(key^(unsigned int)f)^106u);}
+__device__ int roomType(float* s,int floor,int side,int back){unsigned int key=buildingKey(s);int slot=back*2+(side>0?1:0);slot=(slot+(int)(mix(key^9821u)%4u))%4;int use=(int)s[7];if(use==1)return slot==0?2:(slot==1?11:(slot==2?8:1));if(floor==0)return slot==0?0:(slot==1?1:(slot==2?3:8));if(slot==0)return 4;if(slot==1)return floor==1?5:9;if(slot==2)return 8;return (mix(roomKey(s,floor,side,back)^991u)%2u)==0u?10:11;}
+// Floor finishes are independent of furnishing and facade randomness.
+__device__ int floorFinish(unsigned int key,int type){unsigned int choice=mix(key^0x464C4F52u);if(type==8||type==9)return (choice%3u)==0u?FLOOR_TERRAZZO:((choice%3u)==1u?FLOOR_TILE:FLOOR_CHECK);if(type==4||type==5)return (choice%4u)<3u?FLOOR_CARPET:FLOOR_WOOD;if(type==1)return (choice%2u)==0u?FLOOR_TILE:FLOOR_WOOD;return FLOOR_WOOD+(int)(choice%5u);}
+__device__ float3 floorColor(unsigned int key,int finish){int palette=(int)(mix(key^0x434F4C52u)%4u);if(finish==FLOOR_WOOD||finish==FLOOR_PARQUET)return palette==0?make_float3(.42f,.25f,.12f):(palette==1?make_float3(.23f,.12f,.065f):(palette==2?make_float3(.61f,.46f,.29f):make_float3(.37f,.31f,.25f)));if(finish==FLOOR_CARPET)return palette==0?make_float3(.25f,.31f,.33f):(palette==1?make_float3(.40f,.34f,.28f):(palette==2?make_float3(.28f,.32f,.22f):make_float3(.39f,.22f,.20f)));return palette==0?make_float3(.61f,.58f,.49f):(palette==1?make_float3(.29f,.34f,.36f):(palette==2?make_float3(.60f,.49f,.39f):make_float3(.42f,.46f,.40f)));}
+__device__ void buildingDNA(float* s,unsigned int key,float value,unsigned int style){s[3]=(float)(key&65535u);s[4]=(float)(key>>16);s[5]=houseWidth(key,value);s[6]=houseDepth(key,value);s[7]=randf(key^103u)<.8f?0:(float)(1u+mix(key^103u)%2u);s[8]=(float)(value<.35f?3+(int)(mix(key^104u)%2u):(value>.65f?2:2+(int)(mix(key^104u)%2u)));s[9]=(float)(randf(key^105u)<.8f?mix(style^105u)%3u:mix(key^105u)%3u);s[10]=0.0f;for(int f=1;f<=4;++f)s[10+f]=s[9+f]+3.08f+.27f*randf(mix(key^(unsigned int)f)^106u);}
 // Disjoint seed namespaces: region terrain and shared road edges never depend on house DNA.
 __device__ unsigned int regionKey(unsigned int seed,int x,int z){return mix(seed^294731u^mix((unsigned int)x*1597334677u)^mix((unsigned int)z*3812015801u));}
 __device__ float3 rotateY(float3 p,float a){float c=cosf(a),v=sinf(a);return make_float3(c*p.x+v*p.z,p.y,-v*p.x+c*p.z);}
+// Rounded furniture stays one BVH primitive, with bounded local intersections.
+__device__ float furnitureDistance(float3 p,float3 radius,int mat){
+ if(mat==BASIN){float3 a=make_float3(p.x/radius.x,p.y/radius.y,p.z/radius.z);float outer=(sqrtf(dot(a,a))-1)*fminf(radius.x,fminf(radius.y,radius.z));float3 inner=make_float3(radius.x*.81f,radius.y*.93f,radius.z*.81f);float3 b=make_float3(p.x/inner.x,(p.y-radius.y*.42f)/inner.y,p.z/inner.z);float cavity=(sqrtf(dot(b,b))-1)*fminf(inner.x,fminf(inner.y,inner.z));return fmaxf(outer,-cavity);}
+ float r=fminf(mat==UPHOLSTERY?.105f:.035f,fminf(radius.x,fminf(radius.y,radius.z))*.65f);float3 q=make_float3(fabsf(p.x)-radius.x+r,fabsf(p.y)-radius.y+r,fabsf(p.z)-radius.z+r),outside=vmax(q,make_float3(0,0,0));return sqrtf(dot(outside,outside))+fminf(fmaxf(q.x,fmaxf(q.y,q.z)),0)-r;
+}
 // Shared exact primitive intersection for resident BVH leaves and procedural queries.
 __device__ Hit intersectShape(Shape o,float3 ro,float3 rd,float limit,bool shadow){
  Hit h;h.id=-1;h.t=limit;h.n=make_float3(0,0,0);if(shadow&&(o.mat==GLASS||o.mat==LIGHT||o.mat==VIRTUAL_WINDOW||o.mat==VIRTUAL_DOOR))return h;
@@ -50,9 +71,11 @@ __device__ Hit intersectShape(Shape o,float3 ro,float3 rd,float limit,bool shado
  float3 a=(o.lo-lr)*inv,b=(o.hi-lr)*inv,mn=vmin(a,b),mx=vmax(a,b);float near=fmaxf(mn.x,fmaxf(mn.y,mn.z)),far=fminf(mx.x,fminf(mx.y,mx.z));if(far<fmaxf(near,.001f))return h;float t=near>.001f?near:far;
  float3 center=(o.lo+o.hi)*.5f,radius=(o.hi-o.lo)*.5f;
  if(o.mat==LEAF){float3 q=make_float3((lr.x-center.x)/radius.x,(lr.y-center.y)/radius.y,(lr.z-center.z)/radius.z),d=make_float3(ld.x/radius.x,ld.y/radius.y,ld.z/radius.z);float aa=dot(d,d),bb=dot(q,d),cc=dot(q,q)-1,disc=bb*bb-aa*cc;if(disc<0)return h;t=(-bb-sqrtf(disc))/aa;if(t<.001f)t=(-bb+sqrtf(disc))/aa;}
+ if(o.mat==UPHOLSTERY||o.mat==CERAMIC||o.mat==BASIN){t=fmaxf(near,.0011f);bool found=false;for(int step=0;step<48;++step){float distance=furnitureDistance(lr+ld*t-center,radius,o.mat);if(fabsf(distance)<.00025f){found=true;break;}t+=fmaxf(fabsf(distance),.00015f);if(t>far||t>=limit)break;}if(!found)return h;}
  if(t<=.001f||t>=limit)return h;float3 p=lr+ld*t,v=make_float3((p.x-center.x)/fmaxf(.00001f,radius.x),(p.y-center.y)/fmaxf(.00001f,radius.y),(p.z-center.z)/fmaxf(.00001f,radius.z));
  if(fabsf(v.x)>fabsf(v.y)&&fabsf(v.x)>fabsf(v.z))h.n=make_float3(v.x>0?1.f:-1.f,0,0);else if(fabsf(v.y)>fabsf(v.z))h.n=make_float3(0,v.y>0?1.f:-1.f,0);else h.n=make_float3(0,0,v.z>0?1.f:-1.f);
  if(o.mat==LEAF)h.n=norm(make_float3((p.x-center.x)/(radius.x*radius.x),(p.y-center.y)/(radius.y*radius.y),(p.z-center.z)/(radius.z*radius.z)));
+ if(o.mat==UPHOLSTERY||o.mat==CERAMIC||o.mat==BASIN){float3 local=p-center;float e=.0004f;h.n=norm(make_float3(furnitureDistance(local+make_float3(e,0,0),radius,o.mat)-furnitureDistance(local-make_float3(e,0,0),radius,o.mat),furnitureDistance(local+make_float3(0,e,0),radius,o.mat)-furnitureDistance(local-make_float3(0,e,0),radius,o.mat),furnitureDistance(local+make_float3(0,0,e),radius,o.mat)-furnitureDistance(local-make_float3(0,0,e),radius,o.mat)));}
  h.n=rotateY(h.n,o.angle);h.t=t;h.id=0;h.feature=o;return h;
 }
 // Fixed domain tags keep independent random groups from rerolling each other.
@@ -137,8 +160,8 @@ __device__ void table(float* s,float x,float y,float z,float width,float depth){
     for(int a=-1;a<=1;a+=2)for(int b=-1;b<=1;b+=2)leg(s,x+a*(width*.5f-.12f),y,z+b*(depth*.5f-.12f),.72f);
 }
 __device__ void chair(float* s,float x,float y,float z,float3 col,int face=1){
-    box(s,make_float3(x,y+.45f,z),make_float3(.24f,.055f,.23f),FABRIC,col);
-    box(s,make_float3(x,y+.77f,z+face*.20f),make_float3(.24f,.28f,.05f),FABRIC,col);
+    box(s,make_float3(x,y+.45f,z),make_float3(.24f,.055f,.23f),UPHOLSTERY,col);
+    box(s,make_float3(x,y+.77f,z+face*.20f),make_float3(.24f,.28f,.05f),UPHOLSTERY,col);
     for(int a=-1;a<=1;a+=2)for(int b=-1;b<=1;b+=2)leg(s,x+a*.18f,y,z+b*.17f,.42f);
 }
 __device__ void plant(float* s,float x,float y,float z,float size=1){
@@ -151,22 +174,63 @@ __device__ void art(float* s,float x,float y,float z,int side,unsigned int seed)
     box(s,make_float3(x-side*.05f,y,z),make_float3(.015f,.56f,.77f),PLASTER,make_float3(.88f,.83f,.73f),false);
     for(int i=0;i<4;++i)box(s,make_float3(x-side*.07f,y+(randf(seed+i)-.5f)*.65f,z+(randf(seed+20+i)-.5f)*.9f),make_float3(.01f,.1f+randf(seed+40+i)*.16f,.1f+randf(seed+80+i)*.18f),PLASTER,make_float3(.15f+randf(seed+i)*.35f,.24f+randf(seed+60+i)*.2f,.22f),false);
 }
+__device__ void specialRoom(float* s,int type,int side,float y,float z,unsigned int key,float3 accent){
+    if(type==8){
+        // Bath rim, recessed basin, vanity and toilet. Keep the doorway clear.
+        box(s,make_float3(side*7.25f,y+.08f,z-.65f),make_float3(.75f,.08f,1.20f),CERAMIC,make_float3(.82f,.84f,.79f));
+        for(int edge=-1;edge<=1;edge+=2){box(s,make_float3(side*7.25f+edge*.67f,y+.32f,z-.65f),make_float3(.08f,.20f,1.20f),CERAMIC,make_float3(.82f,.84f,.79f));box(s,make_float3(side*7.25f,y+.32f,z-.65f+edge*1.12f),make_float3(.59f,.20f,.08f),CERAMIC,make_float3(.82f,.84f,.79f));}
+        box(s,make_float3(side*7.25f,y+.18f,z-.65f),make_float3(.58f,.015f,1.02f),CERAMIC,make_float3(.49f,.62f,.62f));
+        box(s,make_float3(side*4.65f,y+.42f,z+1.35f),make_float3(.65f,.42f,.43f),WOOD,accent);
+        box(s,make_float3(side*4.65f,y+.88f,z+1.35f),make_float3(.69f,.04f,.47f),CERAMIC,make_float3(.89f,.89f,.84f));
+        box(s,make_float3(side*6.6f,y+.18f,z+1.52f),make_float3(.19f,.18f,.25f),CERAMIC,make_float3(.72f,.75f,.73f));
+        box(s,make_float3(side*6.6f,y+.43f,z+1.38f),make_float3(.34f,.18f,.44f),BASIN,make_float3(.84f,.86f,.82f));
+        box(s,make_float3(side*6.6f,y+.67f,z+1.72f),make_float3(.34f,.23f,.16f),CERAMIC,make_float3(.88f,.88f,.83f));
+        box(s,make_float3(side*4.65f,y+.99f,z+1.35f),make_float3(.42f,.15f,.32f),BASIN,make_float3(.84f,.86f,.82f));
+        box(s,make_float3(side*4.65f,y+1.12f,z+1.68f),make_float3(.025f,.15f,.025f),METAL,make_float3(.42f,.46f,.47f));
+        box(s,make_float3(side*4.65f,y+1.26f,z+1.56f),make_float3(.025f,.025f,.14f),METAL,make_float3(.42f,.46f,.47f));
+        for(int door=-1;door<=1;door+=2){box(s,make_float3(side*4.65f+door*.32f,y+.45f,z+.90f),make_float3(.30f,.34f,.025f),WOOD,accent*.72f);box(s,make_float3(side*4.65f+door*.11f,y+.63f,z+.865f),make_float3(.055f,.012f,.015f),METAL,make_float3(.2f,.23f,.24f));}
+    }else if(type==9){
+        for(int j=0;j<2;++j){float zz=z-.65f+j*1.25f;
+            box(s,make_float3(side*7.3f,y+.48f,zz),make_float3(.60f,.48f,.56f),PLASTER,make_float3(.79f,.81f,.78f));
+            box(s,make_float3(side*6.68f,y+.43f,zz),make_float3(.025f,.29f,.31f),METAL,make_float3(.14f,.20f,.22f));}
+        box(s,make_float3(side*7.3f,y+1.01f,z),make_float3(.66f,.05f,1.3f),WOOD,accent);
+        box(s,make_float3(side*4.6f,y+.35f,z+1.35f),make_float3(.47f,.35f,.45f),FABRIC,make_float3(.51f,.43f,.31f));
+    }else if(type==10){
+        for(int end=-1;end<=1;end+=2){
+            box(s,make_float3(side*6.2f,y+1.05f,z+end*1.99f),make_float3(1.8f,1.05f,.035f),WOOD,make_float3(.22f,.14f,.08f));
+            for(int edge=-1;edge<=1;edge+=2)box(s,make_float3(side*6.2f+edge*1.77f,y+1.05f,z+end*1.8f),make_float3(.035f,1.05f,.23f),WOOD,make_float3(.32f,.22f,.13f));
+            for(int shelf=0;shelf<=3;++shelf)box(s,make_float3(side*6.2f,y+.10f+shelf*.61f,z+end*1.8f),make_float3(1.8f,.025f,.23f),WOOD,make_float3(.35f,.24f,.14f));
+            for(int row=0;row<3;++row)for(int j=0;j<28;++j)box(s,make_float3(side*(4.65f+j*.11f),y+.225f+row*.61f+.07f*randf(key+j+row*7),z+end*1.54f),make_float3(.025f+.018f*randf(key+j),.10f+.07f*randf(key+j+row*7),.08f),FABRIC,lerp(accent,make_float3(.49f,.21f,.12f),randf(key+j+row*13)));}
+        for(int leg=-1;leg<=1;leg+=2)for(int end=-1;end<=1;end+=2)box(s,make_float3(side*6.0f+leg*.42f,y+.15f,z+end*.45f),make_float3(.035f,.15f,.035f),WOOD,make_float3(.22f,.13f,.07f));
+        box(s,make_float3(side*6.0f,y+.40f,z),make_float3(.56f,.13f,.59f),UPHOLSTERY,accent);
+        box(s,make_float3(side*6.48f,y+.81f,z),make_float3(.13f,.47f,.59f),UPHOLSTERY,accent*.8f);
+        for(int arm=-1;arm<=1;arm+=2)box(s,make_float3(side*6.0f,y+.67f,z+arm*.53f),make_float3(.54f,.11f,.10f),UPHOLSTERY,accent*.85f);
+    }else if(type==11){
+        box(s,make_float3(side*7.0f,y+.80f,z),make_float3(.72f,.06f,1.70f),WOOD,make_float3(.55f,.36f,.19f));
+        for(int j=-1;j<=1;j+=2)box(s,make_float3(side*7.0f,y+.38f,z+j*1.35f),make_float3(.55f,.38f,.07f),METAL,make_float3(.16f,.18f,.17f));
+        box(s,make_float3(side*7.0f,y+.89f,z-.8f),make_float3(.46f,.025f,.55f),PLASTER,make_float3(.85f,.81f,.69f));
+        box(s,make_float3(side*4.7f,y+.32f,z+1.4f),make_float3(.55f,.32f,.50f),WOOD,accent);
+    }
+}
 __device__ void room(float* s,int floor,int side,int back){
     float y=floorBase(s,floor),storey=floorBase(s,floor+1)-y,x=side*5.2f,z=roomZ(s,floor,side,back);unsigned int key=roomKey(s,floor,side,back);
-    float3 accent=lerp(make_float3(.30f,.39f,.38f),make_float3(.52f,.29f,.17f),randf(key));
+    float3 accent=roomAccent(key);
     int type=roomType(s,floor,side,back);
+    int finish=floorFinish(key,type);float split=roomSplit(s,floor,side),nearZ=back?split:-8.0f,farZ=back?5.4f:split;
+    box(s,make_float3(side*5.35f,y+.007f,z),make_float3(3.43f,.007f,(farZ-nearZ)*.5f-.11f),finish,floorColor(key,finish),false);
+    specialRoom(s,type,side,y,z,key,accent);
     // Common details, ceiling fixtures, rug, art, power outlets.
     box(s,make_float3(x,y+storey-.18f,z),make_float3(.68f,.035f,.035f),LIGHT,make_float3(1,.81f,.51f),false);
-    box(s,make_float3(x,y+.012f,z),make_float3(1.55f,.009f,1.55f),FABRIC,lerp(accent,make_float3(.72f,.64f,.51f),.55f),false);
+    if(type==0||type==4||type==5||type==10)box(s,make_float3(x,y+.025f,z),make_float3(1.55f,.009f,1.55f),FABRIC,accent*.70f,false);
     art(s,side*8.67f,y+1.65f,z-2.05f,side,key);
     for(int j=0;j<2;++j)box(s,make_float3(side*1.84f,y+.35f,z+(j?1.5f:-1.6f)),make_float3(.025f,.06f,.09f),PLASTER,make_float3(.86f,.84f,.77f),false);
     plant(s,side*7.8f,y,z+1.7f,.9f);
     if(type==0 || type==7){
         // Sofa at the outer side, low table, lounge chair.
-        box(s,make_float3(side*7.1f,y+.30f,z-.15f),make_float3(.62f,.23f,1.22f),FABRIC,accent);
-        box(s,make_float3(side*7.55f,y+.76f,z-.15f),make_float3(.18f,.5f,1.22f),FABRIC,accent*.8f);
-        for(int j=-1;j<=1;j+=2)box(s,make_float3(side*7.1f,y+.56f,z+j*1.1f-.15f),make_float3(.63f,.22f,.14f),FABRIC,accent*.8f);
-        for(int j=0;j<3;++j)box(s,make_float3(side*6.95f,y+.58f,z-.85f+j*.7f),make_float3(.40f,.08f,.31f),FABRIC,accent*1.15f);
+        box(s,make_float3(side*7.1f,y+.30f,z-.15f),make_float3(.62f,.23f,1.22f),UPHOLSTERY,accent);
+        box(s,make_float3(side*7.55f,y+.76f,z-.15f),make_float3(.18f,.5f,1.22f),UPHOLSTERY,accent*.8f);
+        for(int j=-1;j<=1;j+=2)box(s,make_float3(side*7.1f,y+.56f,z+j*1.1f-.15f),make_float3(.63f,.22f,.14f),UPHOLSTERY,accent*.8f);
+        for(int j=0;j<3;++j)box(s,make_float3(side*6.95f,y+.58f,z-.85f+j*.7f),make_float3(.40f,.08f,.31f),UPHOLSTERY,accent*1.15f);
         box(s,make_float3(side*4.85f,y+.36f,z),make_float3(.58f,.055f,.9f),WOOD,make_float3(.39f,.23f,.12f));
         leg(s,side*4.85f,y,z-.6f,.32f);leg(s,side*4.85f,y,z+.6f,.32f);
         box(s,make_float3(side*4.85f,y+.43f,z-.3f),make_float3(.21f,.025f,.3f),PLASTER,make_float3(.70f,.46f,.28f),false);
@@ -194,11 +258,11 @@ __device__ void room(float* s,int floor,int side,int back){
         box(s,make_float3(x,y+.86f,z),make_float3(.25f,.055f,.25f),CONCRETE,make_float3(.64f,.57f,.44f),false);
     }else if(type==4 || type==5){
         // Bedroom or guest room. Keep corridor-side approach clear.
-        box(s,make_float3(side*6.1f,y+.24f,z),make_float3(1.15f,.2f,1.12f),WOOD,make_float3(.28f,.17f,.1f));
-        box(s,make_float3(side*6.1f,y+.51f,z),make_float3(1.14f,.16f,1.10f),FABRIC,make_float3(.86f,.81f,.69f));
-        box(s,make_float3(side*7.18f,y+.86f,z),make_float3(.10f,.58f,1.16f),FABRIC,accent);
-        box(s,make_float3(side*5.7f,y+.69f,z),make_float3(.64f,.035f,1.08f),FABRIC,accent);
-        for(int j=-1;j<=1;j+=2){box(s,make_float3(side*6.8f,y+.73f,z+j*.52f),make_float3(.28f,.12f,.42f),FABRIC,make_float3(.93f,.89f,.80f));
+        box(s,make_float3(side*6.1f,y+.24f,z),make_float3(1.15f,.2f,type==5?.72f:1.12f),WOOD,make_float3(.28f,.17f,.1f));
+        box(s,make_float3(side*6.1f,y+.51f,z),make_float3(1.14f,.16f,type==5?.70f:1.10f),UPHOLSTERY,make_float3(.86f,.81f,.69f));
+        box(s,make_float3(side*7.18f,y+.86f,z),make_float3(.10f,.58f,type==5?.76f:1.16f),UPHOLSTERY,accent);
+        box(s,make_float3(side*5.7f,y+.69f,z),make_float3(.64f,.035f,type==5?.68f:1.08f),UPHOLSTERY,accent);
+        for(int j=-1;j<=1;j+=2){box(s,make_float3(side*6.8f,y+.73f,z+j*(type==5?.30f:.52f)),make_float3(.28f,.12f,.42f),UPHOLSTERY,make_float3(.93f,.89f,.80f));
             box(s,make_float3(side*7.0f,y+.37f,z+j*1.65f),make_float3(.40f,.36f,.35f),WOOD,make_float3(.46f,.28f,.14f));
             box(s,make_float3(side*7.0f,y+.85f,z+j*1.65f),make_float3(.12f,.12f,.12f),LIGHT,make_float3(1,.70f,.38f),false);}
     }
@@ -266,7 +330,7 @@ __device__ void emitBuilding(float* s,const float* Districts,unsigned int seed,i
             plant(s,side*3.0f,y,9.5f,1.2f);
             }
         }
-        if(resident)for(int j=0;j<4;++j){float z=-6+j*3.5f;box(s,make_float3(0,y+storey-.24f,z),make_float3(.45f,.028f,.05f),LIGHT,make_float3(1,.83f,.57f),false);}
+        if(resident)for(int j=0;j<4;++j){if(j==0){unsigned int hallKey=mix(key^(unsigned int)f^0x48414C4Cu);int finish=floorFinish(hallKey,0);box(s,make_float3(0,y+.007f,-1.3f),make_float3(1.58f,.007f,6.7f),finish,floorColor(hallKey,finish),false);}float z=-6+j*3.5f;box(s,make_float3(0,y+storey-.24f,z),make_float3(.45f,.028f,.05f),LIGHT,make_float3(1,.83f,.57f),false);}
         if(resident&&f<floors-1){
             // Two flights, ten address-derived risers each, with a broad intermediate landing.
             for(int i=0;i<10;++i){float height=(i+1)*storey/20.0f;
@@ -291,7 +355,13 @@ __device__ void emitBuilding(float* s,const float* Districts,unsigned int seed,i
     box(s,make_float3(0,2.84f,-8.7f),make_float3(2.1f,.10f,.90f),CONCRETE,make_float3(.65f,.62f,.54f));
     for(int f=1;f<=floors;++f){box(s,make_float3(0,floorBase(s,f),-8.27f),make_float3(9.3f,.10f,.12f),CONCRETE,make_float3(.59f,.57f,.49f));
         for(int side=-1;side<=1;side+=2)box(s,make_float3(side*9.2f,floorBase(s,f),1.5f),make_float3(.10f,.10f,9.7f),CONCRETE,make_float3(.59f,.57f,.49f));}
+    // Facade families remain exact geometry even for distant query buildings.
+    int character=(int)(mix(key^814u)%3u);
+    if(character==0){for(int side=-1;side<=1;side+=2)for(int f=0;f<floors;++f)for(int r=0;r<2;++r){float wz=roomZ(s,f,side,r),yy=floorBase(s,f);for(int edge=-1;edge<=1;edge+=2)box(s,make_float3(side*9.22f,yy+1.8f,wz+edge*1.40f),make_float3(.06f,.78f,.23f),WOOD,dark);}}
+    if(character==1){for(int side=-1;side<=1;side+=2)for(int col=0;col<2;++col)box(s,make_float3(side*(col?8.7f:3.5f),floorBase(s,floors)*.5f,-8.32f),make_float3(.18f,floorBase(s,floors)*.5f,.19f),CONCRETE,plaster);}
+    if(character==2){for(int side=-1;side<=1;side+=2)box(s,make_float3(side*1.9f,1.38f,-9.35f),make_float3(.09f,1.38f,.09f),WOOD,dark);box(s,make_float3(0,2.84f,-9.15f),make_float3(2.1f,.10f,.55f),WOOD,dark);}
     float roofY=floorBase(s,floors);int roof=(int)s[9];
+    if(character!=1)box(s,make_float3(-6.8f,roofY+1.05f,7.5f),make_float3(.46f,1.05f,.55f),BRICK,brick);
     if(roof==0){for(int side=-1;side<=1;side+=2){box(s,make_float3(side*9.05f,roofY+.3f,1.5f),make_float3(.10f,.3f,9.65f),CONCRETE,plaster);box(s,make_float3(0,roofY+.3f,1.5f+side*9.55f),make_float3(9.1f,.3f,.10f),CONCRETE,plaster);}for(int j=0;j<4;++j)plant(s,-7+j*4.5f,roofY,9.3f,1.25f);}
     if(roof==1){for(int j=0;j<48;++j){float x=-9.4f+(j+.5f)*18.8f/48.0f,height=.25f+(1-fabsf(x)/9.4f)*2.1f;box(s,make_float3(x,roofY+height,1.5f),make_float3(18.8f/96.0f,.06f,9.95f),METAL,make_float3(.19f,.22f,.21f));for(int side=-1;side<=1;side+=2)box(s,make_float3(x,roofY+height*.5f,1.5f+side*9.55f),make_float3(18.8f/96.0f,height*.5f,.1f),facade,brick);}}
     if(roof==2){for(int j=0;j<3;++j)box(s,make_float3(0,roofY+j*.38f+.19f,1.5f),make_float3(7.9f-j*1.6f,.19f,8.1f-j*1.6f),CONCRETE,plaster);for(int j=0;j<3;++j)box(s,make_float3(-3.4f+j*3.0f,roofY+1.25f,1.3f),make_float3(.9f,.1f,1.6f),GLASS,make_float3(.15f,.24f,.28f));}
@@ -315,7 +385,7 @@ __global__ void generateScene(float* s,const float* Districts,unsigned int seed,
     float overflow=s[2];for(int i=1;i<19;++i)s[i]=header[i];s[2]=overflow;
 }
 
-__global__ void describeLayout(float* s,float* Plan){if(threadIdx.x||blockIdx.x)return;for(int i=0;i<64;++i)Plan[i]=0;Plan[0]=s[5];Plan[1]=s[6];Plan[2]=s[8];Plan[3]=s[9];Plan[4]=s[7];Plan[5]=s[3];Plan[6]=s[4];Plan[7]=s[15];Plan[13]=s[18];Plan[14]=districtValue((unsigned int)s[22],(int)s[20],(int)s[21]);Plan[15]=propertyValue((unsigned int)s[22],(int)s[20],(int)s[21]);for(int f=0;f<=4;++f)Plan[8+f]=floorBase(s,f);for(int f=0;f<(int)s[8];++f)for(int r=0;r<4;++r){int side=r%2?1:-1;Plan[16+f*4+r]=roomZ(s,f,side,r/2)*s[6];Plan[32+f*4+r]=(float)roomType(s,f,side,r/2);}}
+__global__ void describeLayout(float* s,float* Plan){if(threadIdx.x||blockIdx.x)return;for(int i=0;i<64;++i)Plan[i]=0;Plan[0]=s[5];Plan[1]=s[6];Plan[2]=s[8];Plan[3]=s[9];Plan[4]=s[7];Plan[5]=s[3];Plan[6]=s[4];Plan[7]=s[15];Plan[13]=s[18];Plan[14]=districtValue((unsigned int)s[22],(int)s[20],(int)s[21]);Plan[15]=propertyValue((unsigned int)s[22],(int)s[20],(int)s[21]);for(int f=0;f<=4;++f)Plan[8+f]=floorBase(s,f);for(int f=0;f<(int)s[8];++f)for(int r=0;r<4;++r){int side=r%2?1:-1;Plan[16+f*4+r]=roomZ(s,f,side,r/2)*s[6];Plan[32+f*4+r]=(float)roomType(s,f,side,r/2);Plan[48+f*4+r]=(float)floorFinish(roomKey(s,f,side,r/2),roomType(s,f,side,r/2));}}
 
 
 __device__ unsigned int spread(unsigned int x){x&=1023u;x=(x|(x<<16))&0x030000ffu;x=(x|(x<<8))&0x0300f00fu;x=(x|(x<<4))&0x030c30c3u;x=(x|(x<<2))&0x09249249u;return x;}
@@ -368,8 +438,20 @@ __device__ float3 surfaceMaterial(Shape o,float3 p,float3 n,float footprint){
         float grain=sinf(p.x*180+sinf(p.z*2.2f)*2+sinf(p.z*11)*.4f)*.04f;
         c=c*(.87f+randf((unsigned int)(strip)^o.id)*.19f+grain*micro);if(n.y>.5f&&seam<.013f&&footprint<.02f)c=c*.7f;}
     if(o.mat==TILE){float fu=fract(u/.45f),fv=fract(v/.45f);if(fminf(fminf(fu,1-fu),fminf(fv,1-fv))<.012f)c=c*.62f;}
-    if(o.mat==FABRIC)c=c*(1+.035f*sinf(u*420)*sinf(v*420)*micro);
+    if(o.mat==FABRIC||o.mat==UPHOLSTERY)c=c*(1+.035f*sinf(u*420)*sinf(v*420)*micro);
     if(o.mat==CONCRETE||o.mat==PLASTER)c=c*(.98f+.04f*noise*micro);
+    if(o.mat>=FLOOR_WOOD&&o.mat<=FLOOR_TERRAZZO){
+        // Stable building-local coordinates and filtered microdetail prevent swimming.
+        float x=p.x,z=p.z;unsigned int finishSeed=mix(o.id^0x46494E49u);if((finishSeed&1u)!=0u){float swap=x;x=z;z=swap;}
+        if(o.mat==FLOOR_WOOD||o.mat==FLOOR_PARQUET){float width=.14f+randf(finishSeed)*.10f,length=1.15f+randf(finishSeed^31u)*.8f;
+            if(o.mat==FLOOR_PARQUET){float bx=floorf(x/.72f),bz=floorf(z/.72f);if(((int)(bx+bz)%2)==0){float swap=x;x=z;z=swap;}width=.12f;length=.72f;}
+            float row=floorf(x/width),shift=o.mat==FLOOR_PARQUET?0:randf((unsigned int)row^finishSeed)*length,fu=fract(x/width),fv=fract((z+shift)/length);unsigned int plank=mix((unsigned int)row^mix((unsigned int)floorf((z+shift)/length))^finishSeed);float grain=sinf(x*340+sinf(z*3.7f)*2+sinf(z*17)*.6f);c=c*(.82f+.30f*randf(plank)+grain*.045f*micro);float seam=fminf(fminf(fu,1-fu)*width,fminf(fv,1-fv)*length);c=c*(.55f+.45f*clamp(seam/fmaxf(.0015f,footprint)));}
+        else if(o.mat==FLOOR_CARPET){float weave=sinf(x*610)*sinf(z*580),tuft=randf((unsigned int)floorf(x*230)^mix((unsigned int)floorf(z*230)));c=c*(.91f+(.12f*tuft+.055f*weave)*micro);}
+        else {float size=.32f+randf(finishSeed)*.38f,tx=floorf(x/size),tz=floorf(z/size),fu=fract(x/size),fv=fract(z/size),seam=fminf(fminf(fu,1-fu),fminf(fv,1-fv))*size;
+            if(o.mat==FLOOR_CHECK&&((int)(tx+tz)%2)!=0)c=c*.34f;else c=c*(.94f+.09f*randf((unsigned int)tx^mix((unsigned int)tz)^finishSeed));
+            if(o.mat==FLOOR_TERRAZZO){float chip=randf((unsigned int)floorf(x*85)^mix((unsigned int)floorf(z*85))^finishSeed);c=lerp(c,chip>.90f?make_float3(.78f,.73f,.62f):c*.5f,(chip>.90f||chip<.09f)?micro*.6f:0);}
+            else c=lerp(c*.42f,c,clamp(seam/fmaxf(.0025f,footprint)));}
+    }
     if(o.mat==ASPHALT)c=c*(.92f+.12f*noise);
     return c;
 }
@@ -378,28 +460,68 @@ __device__ float3 sky(float3 rd){float t=clamp(rd.y*.7f+.35f);float3 c=lerp(make
 // Analytic interior mapping lives beside the physical grammar. No mesh allocation,
 // extra shader module, texture atlas, or dependency is needed for a visible opening.
 __device__ void virtualDNA(float* q,Shape opening){for(int i=0;i<32;++i)q[i]=0;buildingDNA(q,opening.id,opening.color.x,0);q[5]=opening.color.y;q[6]=opening.color.z;}
-__global__ void probeResidency(float* s,const float* Districts,const float* C,float* Plan){if(threadIdx.x||blockIdx.x)return;int dx=(int)floorf((C[0]+20)/40),dz=(int)floorf((C[2]+20)/40),x=(int)s[20]+dx,z=(int)s[21]+dz;unsigned int seed=(unsigned int)s[22],key=regionKey(neighbourhoodKey(seed,x,z)^0x484F5553u,x,z);Plot p=cachedPlot(Districts,seed,x,z,1);float sx=.90f+.16f*p.value+.07f*randf(key^101u),sz=.93f+.13f*p.value+.07f*randf(key^102u);float3 local=rotateY(make_float3(C[0]-dx*40,C[1],C[2]-dz*40),-p.angle);float roof=0;int floors=p.value<.35f?3+(int)(mix(key^104u)%2u):(p.value>.65f?2:2+(int)(mix(key^104u)%2u));for(int f=1;f<=floors;++f)roof+=3.08f+.27f*randf(mix(key^(unsigned int)f)^106u);bool retained=s[15]>.5f&&dx==0&&dz==0;bool inside=fabsf(local.x)<9.2f*sx&&local.z>-8.3f*sz&&local.z<11.3f*sz&&local.y<roof+2;float gap=-8.1f*sz-local.z,yaw=C[3]-p.angle;float3 view=make_float3(sinf(yaw)*cosf(C[4]),sinf(C[4]),cosf(yaw)*cosf(C[4])),toDoor=norm(make_float3(-local.x,-.30f-local.y,gap));bool needed=retained||gap<2.5f||dot(view,toDoor)>.25f;bool entrance=needed&&fabsf(local.x)<(retained?5:3.5f)*sx&&local.z>-8.1f*sz-(retained?11:8)&&local.z<-6.1f*sz&&local.y<3;Plan[46]=p.available&&(inside||entrance)?1:0;}
+__global__ void probeResidency(float* s,const float* Districts,const float* C,float* Plan){if(threadIdx.x||blockIdx.x)return;int dx=(int)floorf((C[0]+20)/40),dz=(int)floorf((C[2]+20)/40),x=(int)s[20]+dx,z=(int)s[21]+dz;unsigned int seed=(unsigned int)s[22],key=regionKey(neighbourhoodKey(seed,x,z)^0x484F5553u,x,z);Plot p=cachedPlot(Districts,seed,x,z,1);float sx=houseWidth(key,p.value),sz=houseDepth(key,p.value);float3 local=rotateY(make_float3(C[0]-dx*40,C[1],C[2]-dz*40),-p.angle);float roof=0;int floors=p.value<.35f?3+(int)(mix(key^104u)%2u):(p.value>.65f?2:2+(int)(mix(key^104u)%2u));for(int f=1;f<=floors;++f)roof+=3.08f+.27f*randf(mix(key^(unsigned int)f)^106u);bool retained=s[15]>.5f&&dx==0&&dz==0;bool inside=fabsf(local.x)<9.2f*sx&&local.z>-8.3f*sz&&local.z<11.3f*sz&&local.y<roof+2;float gap=-8.1f*sz-local.z,yaw=C[3]-p.angle;float3 view=make_float3(sinf(yaw)*cosf(C[4]),sinf(C[4]),cosf(yaw)*cosf(C[4])),toDoor=norm(make_float3(-local.x,-.30f-local.y,gap));bool needed=retained||gap<2.5f||dot(view,toDoor)>.25f;bool entrance=needed&&fabsf(local.x)<(retained?5:3.5f)*sx&&local.z>-8.1f*sz-(retained?11:8)&&local.z<-6.1f*sz&&local.y<3;Plan[46]=p.available&&(inside||entrance)?1:0;}
 __device__ Hit virtualBox(float* q,float3 ro,float3 rd,Hit best,float3 center,float3 half,int mat,float3 color){Shape o;center.x*=q[5];center.z*=q[6];half.x*=q[5];half.z*=q[6];o.lo=center-half;o.hi=center+half;o.color=color;o.mat=mat;o.id=buildingKey(q);o.origin=make_float3(0,0,0);o.angle=0;o.solid=0;Hit h=intersectShape(o,ro,rd,best.t,false);return h.id>=0?h:best;}
 __device__ bool virtualBounds(float* q,float3 ro,float3 rd,float limit,float3 center,float3 half){center.x*=q[5];center.z*=q[6];half.x*=q[5];half.z*=q[6];float3 inv=make_float3(1/(fabsf(rd.x)<1e-8f?(rd.x<0?-1e-8f:1e-8f):rd.x),1/(fabsf(rd.y)<1e-8f?(rd.y<0?-1e-8f:1e-8f):rd.y),1/(fabsf(rd.z)<1e-8f?(rd.z<0?-1e-8f:1e-8f):rd.z));return bound(ro,inv,center-half,center+half,limit)<limit;}
-__device__ Hit virtualChair(float* q,float3 ro,float3 rd,Hit h,float x,float y,float z,float3 accent,int face=1){h=virtualBox(q,ro,rd,h,make_float3(x,y+.45f,z),make_float3(.24f,.055f,.23f),FABRIC,accent);h=virtualBox(q,ro,rd,h,make_float3(x,y+.77f,z+face*.20f),make_float3(.24f,.28f,.05f),FABRIC,accent);for(int a=-1;a<=1;a+=2)for(int b=-1;b<=1;b+=2)h=virtualBox(q,ro,rd,h,make_float3(x+a*.18f,y+.21f,z+b*.17f),make_float3(.035f,.21f,.035f),METAL,make_float3(.11f,.13f,.13f));return h;}
+__device__ Hit virtualChair(float* q,float3 ro,float3 rd,Hit h,float x,float y,float z,float3 accent,int face=1){h=virtualBox(q,ro,rd,h,make_float3(x,y+.45f,z),make_float3(.24f,.055f,.23f),UPHOLSTERY,accent);h=virtualBox(q,ro,rd,h,make_float3(x,y+.77f,z+face*.20f),make_float3(.24f,.28f,.05f),UPHOLSTERY,accent);for(int a=-1;a<=1;a+=2)for(int b=-1;b<=1;b+=2)h=virtualBox(q,ro,rd,h,make_float3(x+a*.18f,y+.21f,z+b*.17f),make_float3(.035f,.21f,.035f),METAL,make_float3(.11f,.13f,.13f));return h;}
+__device__ Hit virtualSpecialRoom(float* q,float3 start,float3 direction,Hit h,int type,int side,float y,float z,unsigned int key,float3 accent){
+    if(type==8){
+        // Bath rim, recessed basin, vanity and toilet. Keep the doorway clear.
+        h=virtualBox(q,start,direction,h,make_float3(side*7.25f,y+.08f,z-.65f),make_float3(.75f,.08f,1.20f),CERAMIC,make_float3(.82f,.84f,.79f));
+        for(int edge=-1;edge<=1;edge+=2){h=virtualBox(q,start,direction,h,make_float3(side*7.25f+edge*.67f,y+.32f,z-.65f),make_float3(.08f,.20f,1.20f),CERAMIC,make_float3(.82f,.84f,.79f));h=virtualBox(q,start,direction,h,make_float3(side*7.25f,y+.32f,z-.65f+edge*1.12f),make_float3(.59f,.20f,.08f),CERAMIC,make_float3(.82f,.84f,.79f));}
+        h=virtualBox(q,start,direction,h,make_float3(side*7.25f,y+.18f,z-.65f),make_float3(.58f,.015f,1.02f),CERAMIC,make_float3(.49f,.62f,.62f));
+        h=virtualBox(q,start,direction,h,make_float3(side*4.65f,y+.42f,z+1.35f),make_float3(.65f,.42f,.43f),WOOD,accent);
+        h=virtualBox(q,start,direction,h,make_float3(side*4.65f,y+.88f,z+1.35f),make_float3(.69f,.04f,.47f),CERAMIC,make_float3(.89f,.89f,.84f));
+        h=virtualBox(q,start,direction,h,make_float3(side*6.6f,y+.18f,z+1.52f),make_float3(.19f,.18f,.25f),CERAMIC,make_float3(.72f,.75f,.73f));
+        h=virtualBox(q,start,direction,h,make_float3(side*6.6f,y+.43f,z+1.38f),make_float3(.34f,.18f,.44f),BASIN,make_float3(.84f,.86f,.82f));
+        h=virtualBox(q,start,direction,h,make_float3(side*6.6f,y+.67f,z+1.72f),make_float3(.34f,.23f,.16f),CERAMIC,make_float3(.88f,.88f,.83f));
+        h=virtualBox(q,start,direction,h,make_float3(side*4.65f,y+.99f,z+1.35f),make_float3(.42f,.15f,.32f),BASIN,make_float3(.84f,.86f,.82f));
+        h=virtualBox(q,start,direction,h,make_float3(side*4.65f,y+1.12f,z+1.68f),make_float3(.025f,.15f,.025f),METAL,make_float3(.42f,.46f,.47f));
+        h=virtualBox(q,start,direction,h,make_float3(side*4.65f,y+1.26f,z+1.56f),make_float3(.025f,.025f,.14f),METAL,make_float3(.42f,.46f,.47f));
+        for(int door=-1;door<=1;door+=2){h=virtualBox(q,start,direction,h,make_float3(side*4.65f+door*.32f,y+.45f,z+.90f),make_float3(.30f,.34f,.025f),WOOD,accent*.72f);h=virtualBox(q,start,direction,h,make_float3(side*4.65f+door*.11f,y+.63f,z+.865f),make_float3(.055f,.012f,.015f),METAL,make_float3(.2f,.23f,.24f));}
+    }else if(type==9){
+        for(int j=0;j<2;++j){float zz=z-.65f+j*1.25f;
+            h=virtualBox(q,start,direction,h,make_float3(side*7.3f,y+.48f,zz),make_float3(.60f,.48f,.56f),PLASTER,make_float3(.79f,.81f,.78f));
+            h=virtualBox(q,start,direction,h,make_float3(side*6.68f,y+.43f,zz),make_float3(.025f,.29f,.31f),METAL,make_float3(.14f,.20f,.22f));}
+        h=virtualBox(q,start,direction,h,make_float3(side*7.3f,y+1.01f,z),make_float3(.66f,.05f,1.3f),WOOD,accent);
+        h=virtualBox(q,start,direction,h,make_float3(side*4.6f,y+.35f,z+1.35f),make_float3(.47f,.35f,.45f),FABRIC,make_float3(.51f,.43f,.31f));
+    }else if(type==10){
+        for(int end=-1;end<=1;end+=2){
+            h=virtualBox(q,start,direction,h,make_float3(side*6.2f,y+1.05f,z+end*1.99f),make_float3(1.8f,1.05f,.035f),WOOD,make_float3(.22f,.14f,.08f));
+            for(int edge=-1;edge<=1;edge+=2)h=virtualBox(q,start,direction,h,make_float3(side*6.2f+edge*1.77f,y+1.05f,z+end*1.8f),make_float3(.035f,1.05f,.23f),WOOD,make_float3(.32f,.22f,.13f));
+            for(int shelf=0;shelf<=3;++shelf)h=virtualBox(q,start,direction,h,make_float3(side*6.2f,y+.10f+shelf*.61f,z+end*1.8f),make_float3(1.8f,.025f,.23f),WOOD,make_float3(.35f,.24f,.14f));
+            for(int row=0;row<3;++row)for(int j=0;j<28;++j)h=virtualBox(q,start,direction,h,make_float3(side*(4.65f+j*.11f),y+.225f+row*.61f+.07f*randf(key+j+row*7),z+end*1.54f),make_float3(.025f+.018f*randf(key+j),.10f+.07f*randf(key+j+row*7),.08f),FABRIC,lerp(accent,make_float3(.49f,.21f,.12f),randf(key+j+row*13)));}
+        for(int leg=-1;leg<=1;leg+=2)for(int end=-1;end<=1;end+=2)h=virtualBox(q,start,direction,h,make_float3(side*6.0f+leg*.42f,y+.15f,z+end*.45f),make_float3(.035f,.15f,.035f),WOOD,make_float3(.22f,.13f,.07f));
+        h=virtualBox(q,start,direction,h,make_float3(side*6.0f,y+.40f,z),make_float3(.56f,.13f,.59f),UPHOLSTERY,accent);
+        h=virtualBox(q,start,direction,h,make_float3(side*6.48f,y+.81f,z),make_float3(.13f,.47f,.59f),UPHOLSTERY,accent*.8f);
+        for(int arm=-1;arm<=1;arm+=2)h=virtualBox(q,start,direction,h,make_float3(side*6.0f,y+.67f,z+arm*.53f),make_float3(.54f,.11f,.10f),UPHOLSTERY,accent*.85f);
+    }else if(type==11){
+        h=virtualBox(q,start,direction,h,make_float3(side*7.0f,y+.80f,z),make_float3(.72f,.06f,1.70f),WOOD,make_float3(.55f,.36f,.19f));
+        for(int j=-1;j<=1;j+=2)h=virtualBox(q,start,direction,h,make_float3(side*7.0f,y+.38f,z+j*1.35f),make_float3(.55f,.38f,.07f),METAL,make_float3(.16f,.18f,.17f));
+        h=virtualBox(q,start,direction,h,make_float3(side*7.0f,y+.89f,z-.8f),make_float3(.46f,.025f,.55f),PLASTER,make_float3(.85f,.81f,.69f));
+        h=virtualBox(q,start,direction,h,make_float3(side*4.7f,y+.32f,z+1.4f),make_float3(.55f,.32f,.50f),WOOD,accent);
+    }
+return h;}
 __device__ float3 virtualInterior(float* s,float3 ro,float3 rd,Hit entry,float pixelScale,int angleCulling){
- Shape opening=hitShape(s,entry);float q[32];virtualDNA(q,opening);float3 origin=rotateY(ro-opening.origin,-opening.angle),direction=rotateY(rd,-opening.angle),start=origin+direction*(entry.t+.07f);float sx=q[5],sz=q[6];int floor=0;for(int f=1;f<(int)q[8];++f)if(start.y>=floorBase(q,f))floor=f;float y=floorBase(q,floor),storey=floorBase(q,floor+1)-y;int side=start.x<0?-1:1;bool corridor=fabsf(start.x/sx)<2||start.z/sz>5.4f;int back=start.z/sz<roomSplit(q,floor,side)?0:1;float z=roomZ(q,floor,side,back),x=side*5.2f;unsigned int key=roomKey(q,floor,side,back);float3 accent=lerp(make_float3(.30f,.39f,.38f),make_float3(.52f,.29f,.17f),randf(key)),plaster=lerp(make_float3(.64f,.63f,.57f),make_float3(.87f,.85f,.79f),opening.color.x);int type=roomType(q,floor,side,back);Hit h;h.id=-1;h.t=80;h.n=make_float3(0,0,0);
+ Shape opening=hitShape(s,entry);float q[32];virtualDNA(q,opening);float3 origin=rotateY(ro-opening.origin,-opening.angle),direction=rotateY(rd,-opening.angle),start=origin+direction*(entry.t+.07f);float sx=q[5],sz=q[6];int floor=0;for(int f=1;f<(int)q[8];++f)if(start.y>=floorBase(q,f))floor=f;float y=floorBase(q,floor),storey=floorBase(q,floor+1)-y;int side=start.x<0?-1:1;bool corridor=fabsf(start.x/sx)<2||start.z/sz>5.4f;int back=start.z/sz<roomSplit(q,floor,side)?0:1;float z=roomZ(q,floor,side,back),x=side*5.2f;unsigned int key=roomKey(q,floor,side,back);float3 accent=roomAccent(key),plaster=lerp(make_float3(.64f,.63f,.57f),make_float3(.87f,.85f,.79f),opening.color.x);int type=roomType(q,floor,side,back);Hit h;h.id=-1;h.t=80;h.n=make_float3(0,0,0);
  float nearZ=corridor?-8.0f:(back?roomSplit(q,floor,side)+.10f:-7.94f),farZ=corridor?11.0f:(back?5.3f:roomSplit(q,floor,side)-.10f),cx=corridor?0:side*5.25f,hw=corridor?1.59f:3.44f;
- h=virtualBox(q,start,direction,h,make_float3(cx,y-.10f,(nearZ+farZ)*.5f),make_float3(hw,.10f,(farZ-nearZ)*.5f),WOOD,make_float3(.52f,.32f,.17f));
+ unsigned int floorKey=corridor?mix(buildingKey(q)^(unsigned int)floor^0x48414C4Cu):key;int finish=floorFinish(floorKey,corridor?0:type);
+ h=virtualBox(q,start,direction,h,make_float3(cx,y-.043f,(nearZ+farZ)*.5f),make_float3(hw,.057f,(farZ-nearZ)*.5f),finish,floorColor(floorKey,finish));
  h=virtualBox(q,start,direction,h,make_float3(cx,y+storey-.10f,(nearZ+farZ)*.5f),make_float3(hw,.10f,(farZ-nearZ)*.5f),PLASTER,make_float3(.80f,.79f,.73f));
  if(!corridor){
   for(int end=0;end<2;++end){float a=end?z+.72f:nearZ,b=end?farZ:z-.72f;h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+storey*.5f,(a+b)*.5f),make_float3(.11f,storey*.5f,(b-a)*.5f),PLASTER,plaster);h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+1.2f,z+(end?.76f:-.76f)),make_float3(.16f,1.2f,.045f),WOOD,make_float3(.30f,.20f,.12f));}
   h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+(2.4f+storey)*.5f,z),make_float3(.11f,(storey-2.4f)*.5f,.72f),PLASTER,plaster);h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+2.43f,z),make_float3(.16f,.045f,.80f),WOOD,make_float3(.30f,.20f,.12f));h=virtualBox(q,start,direction,h,make_float3(side*2.39f,y+1.17f,z+.79f),make_float3(.65f,1.17f,.04f),WOOD,make_float3(.47f,.30f,.17f));h=virtualBox(q,start,direction,h,make_float3(-side*8.8f,y+storey*.5f,z),make_float3(.05f,storey*.5f,.72f),PLASTER,plaster*.65f);
   for(int end=0;end<2;++end)h=virtualBox(q,start,direction,h,make_float3(cx,y+storey*.5f,end?farZ:nearZ),make_float3(hw,storey*.5f,.01f),PLASTER,plaster);
-  h=virtualBox(q,start,direction,h,make_float3(x,y+.012f,z),make_float3(1.55f,.009f,1.55f),FABRIC,lerp(accent,make_float3(.72f,.64f,.51f),.55f));
+  if(type==0||type==4||type==5||type==10)h=virtualBox(q,start,direction,h,make_float3(x,y+.025f,z),make_float3(1.55f,.009f,1.55f),FABRIC,accent*.70f);
   // Major furniture matches the positions, type and palette in room(). Small
   // fittings are deferred until residency; these intersections allocate nothing.
   if(!angleCulling||virtualBounds(q,start,direction,h.t,make_float3(side*5.95f,y+1.11f,z+.05f),make_float3(2.55f,1.12f,2.25f))){
-  if(type==0||type==7){h=virtualBox(q,start,direction,h,make_float3(side*7.1f,y+.30f,z-.15f),make_float3(.62f,.23f,1.22f),FABRIC,accent);h=virtualBox(q,start,direction,h,make_float3(side*7.55f,y+.76f,z-.15f),make_float3(.18f,.5f,1.22f),FABRIC,accent*.8f);h=virtualBox(q,start,direction,h,make_float3(side*4.85f,y+.36f,z),make_float3(.58f,.055f,.9f),WOOD,make_float3(.39f,.23f,.12f));}
+  h=virtualSpecialRoom(q,start,direction,h,type,side,y,z,key,accent);
+  if(type==0||type==7){h=virtualBox(q,start,direction,h,make_float3(side*7.1f,y+.30f,z-.15f),make_float3(.62f,.23f,1.22f),UPHOLSTERY,accent);h=virtualBox(q,start,direction,h,make_float3(side*7.55f,y+.76f,z-.15f),make_float3(.18f,.5f,1.22f),UPHOLSTERY,accent*.8f);h=virtualBox(q,start,direction,h,make_float3(side*4.85f,y+.36f,z),make_float3(.58f,.055f,.9f),WOOD,make_float3(.39f,.23f,.12f));}
   if(type==1){h=virtualBox(q,start,direction,h,make_float3(side*7.85f,y+.44f,z-.15f),make_float3(.65f,.44f,1.78f),WOOD,make_float3(.34f,.27f,.18f));h=virtualBox(q,start,direction,h,make_float3(side*7.8f,y+.92f,z-.15f),make_float3(.76f,.05f,1.88f),TILE,make_float3(.84f,.81f,.71f));h=virtualBox(q,start,direction,h,make_float3(side*4.4f,y+.76f,z),make_float3(.8f,.045f,.5f),WOOD,make_float3(.55f,.32f,.15f));}
   if(type==2||type==6){h=virtualBox(q,start,direction,h,make_float3(side*6.9f,y+.76f,z),make_float3(.625f,.045f,1.05f),WOOD,make_float3(.55f,.32f,.15f));h=virtualBox(q,start,direction,h,make_float3(side*6.9f,y+1.12f,z),make_float3(.04f,.3f,.47f),METAL,make_float3(.09f,.1f,.11f));h=virtualBox(q,start,direction,h,make_float3(side*7.8f,y+1.1f,z+1.9f),make_float3(.50f,1.1f,.27f),WOOD,make_float3(.4f,.24f,.12f));}
   if(type==3)h=virtualBox(q,start,direction,h,make_float3(x,y+.76f,z),make_float3(1.1f,.045f,.6f),WOOD,make_float3(.55f,.32f,.15f));
-  if(type==4||type==5){h=virtualBox(q,start,direction,h,make_float3(side*6.1f,y+.24f,z),make_float3(1.15f,.2f,1.12f),WOOD,make_float3(.28f,.17f,.1f));h=virtualBox(q,start,direction,h,make_float3(side*6.1f,y+.51f,z),make_float3(1.14f,.16f,1.10f),FABRIC,make_float3(.86f,.81f,.69f));h=virtualBox(q,start,direction,h,make_float3(side*7.18f,y+.86f,z),make_float3(.10f,.58f,1.16f),FABRIC,accent);h=virtualBox(q,start,direction,h,make_float3(side*5.7f,y+.69f,z),make_float3(.64f,.035f,1.08f),FABRIC,accent);}
+  if(type==4||type==5){h=virtualBox(q,start,direction,h,make_float3(side*6.1f,y+.24f,z),make_float3(1.15f,.2f,type==5?.72f:1.12f),WOOD,make_float3(.28f,.17f,.1f));h=virtualBox(q,start,direction,h,make_float3(side*6.1f,y+.51f,z),make_float3(1.14f,.16f,type==5?.70f:1.10f),UPHOLSTERY,make_float3(.86f,.81f,.69f));h=virtualBox(q,start,direction,h,make_float3(side*7.18f,y+.86f,z),make_float3(.10f,.58f,type==5?.76f:1.16f),UPHOLSTERY,accent);h=virtualBox(q,start,direction,h,make_float3(side*5.7f,y+.69f,z),make_float3(.64f,.035f,type==5?.68f:1.08f),UPHOLSTERY,accent);}
   if(type==0||type==7){for(int leg=-1;leg<=1;leg+=2)h=virtualBox(q,start,direction,h,make_float3(side*4.85f,y+.16f,z+leg*.6f),make_float3(.035f,.16f,.035f),METAL,make_float3(.11f,.13f,.13f));h=virtualChair(q,start,direction,h,side*4.7f,y,z+1.8f,make_float3(.53f,.47f,.35f));}
   if(type==1||type==2||type==3||type==6){float tx=type==1?side*4.4f:(type==3?x:side*6.9f),width=type==1?1.6f:(type==3?2.2f:1.25f),depth=type==1?1:(type==3?1.2f:2.1f);for(int a=-1;a<=1;a+=2)for(int b=-1;b<=1;b+=2)h=virtualBox(q,start,direction,h,make_float3(tx+a*(width*.5f-.12f),y+.36f,z+b*(depth*.5f-.12f)),make_float3(.035f,.36f,.035f),METAL,make_float3(.11f,.13f,.13f));if(type==3)for(int j=-1;j<=1;j+=2){h=virtualChair(q,start,direction,h,x+j*.65f,y,z+1,accent);h=virtualChair(q,start,direction,h,x+j*.65f,y,z-1,accent,-1);}else if(type==1){h=virtualChair(q,start,direction,h,tx,y,z+1,accent);h=virtualChair(q,start,direction,h,tx,y,z-1,accent,-1);}else h=virtualChair(q,start,direction,h,side*5.8f,y,z,accent);}
   }

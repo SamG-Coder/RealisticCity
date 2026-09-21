@@ -32,6 +32,20 @@ The current GPU residency window contains **25, 121, or 441 plot slots and at mo
 
 Outside the cache, rays query building exteriors directly from their addresses, up to an **8km ray horizon**. The build derives a query sink from the same authored `emitBuilding()` grammar, preserving roof, facade, window, and trim geometry without allocating every distant building. A separate GPU visibility pass keeps shader compilation manageable. Primary rays and distant sun occlusion use this path. Windows and entrance openings in nonresident buildings use seeded analytic interior mapping. Distant ambient/contact lighting is approximate.
 
+### Seeded building variation
+
+Three proportion families produce narrower/deeper, broader/shallower, and balanced footprints. Per-floor, per-side partition positions span 3.9 local metres, creating asymmetric large and small rooms while maintaining minimum room depths and clear door approaches. The connected corridor and two-flight stair core remain consistent; this does not yet generate arbitrary wings or different stair topologies.
+
+Residential ground floors contain a seeded arrangement of lounge, kitchen, dining room, and bathroom. Upper floors contain primary/guest bedrooms, bathrooms, libraries or studios, with utility rooms on additional storeys. Workspaces use offices, studios, kitchens and bathrooms. Bathrooms have a bath, vanity and toilet; utility rooms have appliances and a worktop; libraries have shelving and a reading chair; studios have a workbench and storage. Guest beds are narrower, and room palettes use five seeded colour families. Room sizes, assignments, palettes and the new major fixtures agree between physical and virtual interiors.
+
+Flooring has its own seed channel: timber boards, basketweave parquet, plain tiles, checker tiles, carpet and terrazzo, with four colour palettes per family. Bathrooms and utility rooms choose hard finishes; bedrooms usually choose carpet. Floor patterns use building-local coordinates and filter fine grain with distance. The room finish is shared by virtual and physical views. Upholstery uses rounded surfaces, bathroom basins have curved cavities, and bookshelves have open shelves. These remain procedural shader primitives; collision uses conservative bounds.
+
+Exterior character independently selects shutters, facade pilasters, or a timber entrance porch, plus seeded chimneys, alongside the existing roof forms and materials. The exact exterior emitter supplies both resident and distant geometry. Terrain remains derived from region seeds. These grammar changes intentionally change buildings produced by earlier versions of the same seed.
+
+Run `npm run test:variance` to check room-type coverage, safe partitions, finite geometry, resident/nonresident plan agreement and regeneration. It also writes exterior and room captures plus `captures/variance/review.html`.
+
+![Seeded lounge with rounded upholstery and checker tile flooring](docs/images/seeded-interior.png)
+
 ### Virtual windows and entrances
 
 All virtual-interior generation, ray intersections, shading, and entrance residency logic live in **`kernels/building.cu`**, alongside the physical building grammar. No rendering package, texture atlas, WebShader submodule, or runtime dependency has been added. JavaScript schedules the existing GPU work and residency changes.
@@ -44,18 +58,18 @@ This is an approximation of the furnished room, not an identical render: small f
 
 Run `npm run test:parallax` for full-resolution legacy/virtual/physical captures and frame-time comparisons, entrance preloading, side-window eviction, room-layout consistency, and deterministic regeneration across positive/negative addresses and seed zero. Results are saved under `captures/parallax/`. `engine.parallaxEnabled` is available for diagnostic comparisons; rebuild the scene after changing it. Active feature counts can fall when the interior is absent, but the existing fixed geometry allocation is retained.
 
-The virtual-opening pass is compiled from the same CUDA file and reuses the existing glass buffer; it adds no GPU frame buffer. An isolated Edge/NVIDIA Blackwell comparison at 1920×1080, with four warm-up frames and ten timed frames per view, measured the following median draw-to-GPU-completion times:
+The virtual-opening pass is compiled from the same CUDA file and reuses the existing glass buffer; it adds no GPU frame buffer. With seeded floor finishes and rounded furniture, an isolated Edge/NVIDIA Blackwell comparison at 1920×1080, with four warm-up frames and ten timed frames per view, measured the following median draw-to-GPU-completion times:
 
 | View | Legacy rendering | Virtual interiors enabled | Change in frame time |
 | --- | ---: | ---: | ---: |
-| Exterior | 26.0 ms | 24.9 ms | 4% less |
-| Looking through a window | 20.8 ms | 15.8 ms | 24% less |
-| Facing the entrance | 21.1 ms | 16.9 ms | 20% less |
-| Aerial city | 28.9 ms | 24.4 ms | 16% less |
-| Loaded lobby | 27.9 ms | 28.0 ms | Under 1% more |
-| Loaded room | 28.0 ms | 29.6 ms | 6% more |
+| Exterior | 27.0 ms | 27.4 ms | 1% more |
+| Looking through a window | 20.0 ms | 15.9 ms | 21% less |
+| Facing the entrance | 22.0 ms | 19.1 ms | 13% less |
+| Aerial city | 35.4 ms | 31.5 ms | 11% less |
+| Loaded lobby | 28.0 ms | 27.0 ms | 4% less |
+| Loaded room | 26.0 ms | 26.0 ms | Unchanged |
 
-The first three legacy cases contain a physical active interior; the virtual cases defer it. Both aerial cases omit the active interior. Both loaded-room cases retain their physical interiors. These are fixed-camera active-frame measurements, not guaranteed displayed FPS. The approach improves these outdoor views but is not a universal speedup. Startup, including shader preparation, took about 46 seconds in this run; the recorded pre-change run took about 33 seconds. Scene generation did not show a consistent speedup. The active scene contained 23,237 features with a virtual active building versus 23,878 with the physical interior and virtual neighbours. Virtual images intentionally differ from the full interior, so the earlier exact-image benchmark cannot serve as a visual baseline for this feature.
+The first three legacy cases contain a physical active interior; the virtual cases defer it. Both aerial cases omit the active interior. Both loaded-room cases retain their physical interiors. These are fixed-camera active-frame measurements, not guaranteed displayed FPS. The approach improves these outdoor views but is not a universal speedup. Startup, including shader preparation, took about 93 seconds in this run; the earlier simpler virtual-interior grammar took about 46 seconds. Rounded furniture and the expanded material grammar increase shader preparation and rendering work. Scene generation did not show a consistent speedup. The active scene contained 24,208 features with a virtual active building versus 24,764 with the physical interior and virtual neighbours. Virtual images intentionally differ from the full interior, so the earlier exact-image benchmark cannot serve as a visual baseline for this feature.
 
 Geometry and BVH allocation are fixed at 262,144 feature slots (about 34 MiB combined geometry, BVH, and sort buffers; frame buffers are additional: the distant visibility and glass passes use 80 bytes per render pixel, about 158 MiB at 1920×1080). Sorting and bounds construction use the next power of two of the actual feature count, rather than always processing the allocation ceiling. Eviction overwrites reusable slots; it does not continually allocate buffers. World seeds accept 0–16,777,215; lot coordinates accept −1,000,000–1,000,000. A 32-bit key can repeat at different addresses; it is a deterministic variation key, not a unique address encoding. Save the world seed, address, and generator version for reproducibility.
 

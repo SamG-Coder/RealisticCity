@@ -1,6 +1,6 @@
 // Lower the authored emitter to a read-only query sink. No distant proxy geometry.
 export function queryGrammar(source){
- const names=['between','leg','table','chair','plant','art','room','sideWindow','emitBuilding'];
+ const names=['between','leg','table','chair','plant','art','specialRoom','room','sideWindow','emitBuilding'];
  const extracts=names.map(name=>{const pattern=new RegExp('__device__ void '+name+'\\('),start=source.search(pattern);if(start<0)throw Error('Missing shared generator '+name);let open=source.indexOf('{',start),depth=1,end=open+1;for(;depth;end++){if(source[end]==='{')depth++;if(source[end]==='}')depth--;}return source.slice(start,end);});
  // Queries currently match nonresident exteriors. Remove resident-only blocks before
  // WGSL generation so the GPU driver need not optimize the entire furniture grammar.

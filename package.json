@@ -14,7 +14,8 @@
     "build:pages": "npm run build && node tools/package-pages.mjs",
     "test:motion": "node tools/test-motion-cache.mjs",
     "test:shadows": "node tools/test-shadow-blur.mjs",
-    "test:parallax": "node tools/test-parallax.mjs"
+    "test:parallax": "node tools/test-parallax.mjs",
+    "test:variance": "node tools/test-variance.mjs"
   },
   "devDependencies": {
     "playwright": "1.56.1"
