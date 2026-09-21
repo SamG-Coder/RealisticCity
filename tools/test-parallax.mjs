@@ -11,9 +11,10 @@ try {
  assert.equal(await page.evaluate(()=>window.__error),undefined);
  const startupMs=Date.now()-startup;console.log('Ready',startupMs,'ms');
  const report=await page.evaluate(async()=>{
-  const e=engine;await e.resize(1920,1080);const shots=[],scenes=[];
+  const e=engine;await e.resize(1920,1080);const shots=[],scenes=[],planSnapshots=[];
   const world=(x,z,angle)=>[Math.cos(angle)*x+Math.sin(angle)*z,-Math.sin(angle)*x+Math.cos(angle)*z];
   const camera=(x,y,z,yaw,pitch=0)=>{const a=e.layout[13],[wx,wz]=world(x,z,a);return [wx,y,wz,yaw+a,pitch,0,0,0,...Array(8).fill(0)];};
+  const windowZ=async(side)=>{const d=await e.runtime.read(e.buffers.s,Float32Array,(32+e.shapes*16)*4);for(let i=0;i<e.shapes;i++){const b=32+i*16;if(d[b+13]===0&&d[b+14]===0&&(d[b+9]===12||d[b+9]===6)&&d[b+3]-d[b]<.10&&side*(d[b]+d[b+3])*.5>8*e.layout[0]&&d[b+1]<1.2)return (d[b+2]+d[b+5])*.5;}throw Error('No side opening');};
   const capture=async name=>{for(let i=0;i<8;i++){e.draw();await e.runtime.idle();}const p=await e.pixels(),c=document.createElement('canvas');c.width=e.width;c.height=e.height;c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(p),c.width,c.height),0,0);shots.push({name,png:c.toDataURL('image/png').split(',')[1]});};
   for(const view of ['exterior','window','entrance','flight','lobby','room']){
    for(const mode of ['legacy','virtual','physical']){
@@ -22,8 +23,8 @@ try {
     e.parallaxEnabled=mode!=='legacy';
     const begin=performance.now();await e.build(240921,0,0,mode!=='virtual'&&view!=='flight');const buildMs=performance.now()-begin;
     let c=camera(22,2,-25,-.55,-.03);
-    if(view==='window')c=camera(13*e.layout[0],.2,e.layout[17],-Math.PI/2,0);
-    if(view==='entrance')c=camera(.3,0,-18,0,0);
+    if(view==='window')c=camera(13*e.layout[0],.2,await windowZ(1),-Math.PI/2,0);
+    if(view==='entrance')c=camera(e.layout[66]*e.layout[0]+.3,0,-18,0,0);
     if(view==='flight')c=[0,100,-120,.15,-.32,0,0,0,...Array(8).fill(0)];
     if(view==='lobby'||view==='room'){await e.view(view==='lobby'?2:3);c=await e.camera();}
     const times=[];
@@ -34,17 +35,18 @@ try {
   }
   e.parallaxEnabled=true;
   const cases=[];
-  for(const [seed,x,z] of [[240921,0,0],[17,-2,3],[0,7,-4]]){
+  for(const [seed,x,z] of [[240921,0,0],[71,0,0],[0,0,0],[1,0,0],[17,-2,3],[0,7,-4]]){
    await e.build(seed,x,z,false);
    if(!e.hasBuilding)continue;
    const plan=[...e.layout],sx=plan[0],sz=plan[1];
-   e.setCamera(camera(10.5*sx,0,plan[16],-Math.PI/2));await e.stream();if(e.resident)throw Error('Side window loaded interior');
-   e.setCamera(camera(0,0,-8.1*sz-6,Math.PI));await e.stream();if(e.resident)throw Error('Looking away loaded a distant entrance');
-   e.setCamera(camera(0,0,-8.1*sz-2,Math.PI));await e.stream();if(!e.resident)throw Error('Backwards entrance did not preload');
+   e.setCamera(camera(10.5*sx,0,await windowZ(1),-Math.PI/2));await e.stream();if(e.resident)throw Error('Side window loaded interior');
+   e.setCamera(camera(plan[66]*sx,0,-8.1*sz-6,Math.PI));await e.stream();if(e.resident)throw Error('Looking away loaded a distant entrance');
+   e.setCamera(camera(plan[66]*sx,0,-8.1*sz-2,Math.PI));await e.stream();if(!e.resident)throw Error('Backwards entrance did not preload');
    e.step([-1,0,0,0,0,0],144);const backwards=await e.camera(),a=e.layout[13],localZ=Math.sin(a)*backwards[0]+Math.cos(a)*backwards[2];if(localZ<-8.1*sz+.2)throw Error('Backwards entry was blocked');
    e.setCamera(camera(16,0,0,0));await e.stream();if(e.resident)throw Error('Exit did not evict');
-   e.setCamera(camera(0,0,-8.1*sz-7,0));await e.stream();if(!e.resident)throw Error('Entrance did not preload');
+   e.setCamera(camera(plan[66]*sx,0,-8.1*sz-7,0));await e.stream();if(!e.resident)throw Error('Entrance did not preload');
    if(plan.slice(0,7).some((v,i)=>v!==e.layout[i])||plan.slice(8,44).some((v,i)=>v!==e.layout[i+8]))throw Error('Room layout changed at transition');
+   if(x===0&&z===0){const saved=await e.camera(),d=await e.runtime.read(e.buffers.s,Float32Array,(32+e.shapes*16)*4),features=[];for(let i=0;i<e.shapes;i++){const b=32+i*16;if(d[b+13]===0&&d[b+14]===0&&d[b+1]<1.4&&d[b+4]>.12&&d[b+3]-d[b]<30)features.push(Array.from(d.slice(b,b+10)));}planSnapshots.push({seed,family:e.layout[64],layout:[...e.layout],features});await e.view(2);await capture('plan-'+e.layout[64]+'-entry');e.setCamera(saved);}
    const before=await e.camera();e.step([1,0,0,0,0,0],120);const after=await e.camera();if(after[7]<=before[7]+1)throw Error('Entrance blocked');
    e.setCamera(camera(0,0,0,0));await e.stream();if(!e.resident)throw Error('Inside room was evicted');
    e.setCamera(camera(16,0,0,0));await e.stream();if(e.resident)throw Error('Departed interior retained');
@@ -54,14 +56,15 @@ try {
   // Angular group rejection must be an exact optimization, not a detail cutoff.
   await e.resize(640,360);let angleComparisons=0;
   for(const {seed,x,z} of cases){await e.build(seed,x,z,false);for(const side of [-1,1])for(const turn of [-.4,.4]){
-   const c=camera(side*13*e.layout[0],.2,e.layout[side<0?16:17],-side*Math.PI/2+turn,turn*.5);
+   const c=camera(side*13*e.layout[0],.2,await windowZ(side),-side*Math.PI/2+turn,turn*.5);
    e.angleCullingEnabled=false;e.setCamera(c);e.draw();await e.runtime.idle();const reference=await e.pixels();
    e.angleCullingEnabled=true;e.setCamera(c);e.draw();await e.runtime.idle();const culled=await e.pixels();
    if(reference.some((v,i)=>v!==culled[i]))throw Error('Angle culling changed visible pixels');angleComparisons++;
   }}
-  window.__parallaxShots=shots;return {scenes,entranceAndSideWindowCases:cases,angleComparisons,angleCullingExact:true,backwardsEntry:true,deterministic:true,errors:e.errors};
+  window.__parallaxShots=shots;window.__planSnapshots=planSnapshots;return {scenes,entranceAndSideWindowCases:cases,angleComparisons,angleCullingExact:true,backwardsEntry:true,deterministic:true,errors:e.errors};
  });
  assert.deepEqual(report.errors,[]);await fs.mkdir('captures/parallax',{recursive:true});
  const shots=await page.evaluate(()=>window.__parallaxShots);for(const shot of shots)await fs.writeFile(`captures/parallax/${shot.name}.png`,Buffer.from(shot.png,'base64'));
+ await fs.writeFile('captures/parallax/plans.json',JSON.stringify(await page.evaluate(()=>window.__planSnapshots)));
  await fs.writeFile('captures/parallax/report.json',JSON.stringify({...report,startupMs},null,2));console.log(JSON.stringify({...report,startupMs},null,2));
 }finally{await browser?.close();await new Promise(r=>server.close(r));}

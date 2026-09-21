@@ -8,7 +8,7 @@ export class BuildingEngine{
   this.device.lost.then(info=>{this.errors.push('Device lost: '+info.message);window.dispatchEvent(new CustomEvent('gpu-error',{detail:info.message}));});
   const names=['prepareDistricts','generateScene','probeOutdoor','probeResidency','probeRay','probeStreet','describeLayout','morton','sortPairs','leaves','parents','initCamera','simulate','accumulate','farVisibility','virtualOpenings','movingShadows','render','temporalResolve','rememberFrame'];
   for(let i=0;i<names.length;i++){const n=names[i];progress(`Preparing ${n} · ${i+1}/${names.length}`);const response=await fetch(`generated/${n}.json`);if(!response.ok)throw Error('Run npm run build first: missing '+n);const a=await response.json();this.kernels[n]=await this.runtime.kernel(a);}
-  for(const [name,floats]of Object.entries({s:32+262144*16,nodes:524288*8,keys:524288,C:16,I:16,Plan:64,Districts:16384*8}))this.buffers[name]=this.runtime.createBuffer(floats*4,{label:name});
+  for(const [name,floats]of Object.entries({s:32+262144*16,nodes:524288*8,keys:524288,C:16,I:16,Plan:256,Districts:16384*8}))this.buffers[name]=this.runtime.createBuffer(floats*4,{label:name});
   await this.resize(1920,1080);progress('Generating rooms and stairs…');await this.build(this.seed,0,0,false);await this.view(1);return this;
  }
  // Dispatch snapshots scalar values; reuse bindings even across BVH sort stages.

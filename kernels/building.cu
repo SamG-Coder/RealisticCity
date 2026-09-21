@@ -47,11 +47,27 @@ __device__ unsigned int roomKey(float* s,int floor,int side,int back){return mix
 __device__ float houseWidth(unsigned int key,float value){int form=(int)(mix(key^811u)%3u);return (form==0?.92f:(form==1?1.06f:.98f))+.035f*value+.025f*randf(key^101u);}
 __device__ float houseDepth(unsigned int key,float value){int form=(int)(mix(key^811u)%3u);return (form==0?1.08f:(form==1?.93f:1.0f))+.025f*value+.025f*randf(key^102u);}
 __device__ float3 roomAccent(unsigned int key){int palette=(int)(mix(key^817u)%5u);float3 c=palette==0?make_float3(.23f,.36f,.44f):(palette==1?make_float3(.38f,.44f,.28f):(palette==2?make_float3(.53f,.28f,.22f):(palette==3?make_float3(.61f,.47f,.27f):make_float3(.55f,.51f,.44f))));return c*(.88f+.24f*randf(key));}
-__device__ float roomSplit(float* s,int floor,int side){return -3.25f+randf(roomKey(s,floor,side,0)^713u)*3.9f;}
-__device__ float roomZ(float* s,int floor,int side,int back){float split=roomSplit(s,floor,side);return back?(split+5.4f)*.5f:(-8.0f+split)*.5f;}
-__device__ int roomType(float* s,int floor,int side,int back){unsigned int key=buildingKey(s);int slot=back*2+(side>0?1:0);slot=(slot+(int)(mix(key^9821u)%4u))%4;int use=(int)s[7];if(use==1)return slot==0?2:(slot==1?11:(slot==2?8:1));if(floor==0)return slot==0?0:(slot==1?1:(slot==2?3:8));if(slot==0)return 4;if(slot==1)return floor==1?5:9;if(slot==2)return 8;return (mix(roomKey(s,floor,side,back)^991u)%2u)==0u?10:11;}
+// Canonical room geometry is mapped into one address-selected circulation plan.
+__device__ int planFamily(unsigned int key){return (int)(mix(key^0x504C414Eu)%4u);}
+__device__ float hallOffset(unsigned int key){int p=planFamily(key);return p==1?-2.0f:(p==2?2.0f:0);}
+__device__ float entranceX(unsigned int key){return planFamily(key)==3?6.0f:hallOffset(key);}
+__device__ bool openWing(float* s,int side){int p=planFamily(buildingKey(s));return (p==1&&side>0)||(p==2&&side<0);}
+__device__ int sideRooms(float* s,int side){return openWing(s,side)?1:2;}
+__device__ float planX(unsigned int key,float x){float h=hallOffset(key);return x< -1.8f?-9+(x+9)*(7.2f+h)/7.2f:(x>1.8f?9-(9-x)*(7.2f-h)/7.2f:x+h);}
+__device__ float unplanX(unsigned int key,float x){float h=hallOffset(key);return x<h-1.8f?-9+(x+9)*7.2f/(7.2f+h):(x>h+1.8f?9-(9-x)*7.2f/(7.2f-h):x-h);}
+__device__ float planZ(unsigned int key,float z){return planFamily(key)==3?3.0f-z:z;}
+__device__ float3 planPoint(unsigned int key,float3 p){return make_float3(planX(key,p.x),p.y,planZ(key,p.z));}
+__device__ float roomEnd(float* s){return planFamily(buildingKey(s))==3?4.2f:5.4f;}
+__device__ float roomSplit(float* s,int floor,int side){float r=randf(roomKey(s,floor,side,0)^713u);return planFamily(buildingKey(s))==3?-2.7f+r*1.5f:-3.25f+r*3.9f;}
+__device__ float roomNear(float* s,int floor,int side,int r){return r==0?-8:roomSplit(s,floor,side);}
+__device__ float roomFar(float* s,int floor,int side,int r){return r==0&&sideRooms(s,side)==2?roomSplit(s,floor,side):roomEnd(s);}
+__device__ float roomZ(float* s,int floor,int side,int back){return (roomNear(s,floor,side,back)+roomFar(s,floor,side,back))*.5f;}
+__device__ float windowZ(float* s,int floor,int side,int back){float split=roomSplit(s,floor,side);float z=back?(split+roomEnd(s))*.5f:(-8+split)*.5f;return planZ(buildingKey(s),z);}
+__device__ float furnitureZ(float* s,int floor,int side,int back){return sideRooms(s,side)==1?(back?2.0f:-4.6f):roomZ(s,floor,side,back);}
+__device__ int roomType(float* s,int floor,int side,int back){unsigned int key=buildingKey(s);if(openWing(s,side))return floor==0?(back?1:0):(back?2:10);if(planFamily(key)==1||planFamily(key)==2)return back?8:((int)s[7]==1?2:(floor==0?4:5));int slot=back*2+(side>0?1:0);slot=(slot+(int)(mix(key^9821u)%4u))%4;int use=(int)s[7];if(use==1)return slot==0?2:(slot==1?11:(slot==2?8:1));if(floor==0)return slot==0?0:(slot==1?1:(slot==2?3:8));if(slot==0)return 4;if(slot==1)return floor==1?5:9;if(slot==2)return 8;return (mix(roomKey(s,floor,side,back)^991u)%2u)==0u?10:11;}
 // Floor finishes are independent of furnishing and facade randomness.
 __device__ int floorFinish(unsigned int key,int type){unsigned int choice=mix(key^0x464C4F52u);if(type==8||type==9)return (choice%3u)==0u?FLOOR_TERRAZZO:((choice%3u)==1u?FLOOR_TILE:FLOOR_CHECK);if(type==4||type==5)return (choice%4u)<3u?FLOOR_CARPET:FLOOR_WOOD;if(type==1)return (choice%2u)==0u?FLOOR_TILE:FLOOR_WOOD;return FLOOR_WOOD+(int)(choice%5u);}
+__device__ int roomFinish(float* s,int floor,int side,int room){return floorFinish(roomKey(s,floor,side,room),floor==0&&openWing(s,side)?1:roomType(s,floor,side,room));}
 __device__ float3 floorColor(unsigned int key,int finish){int palette=(int)(mix(key^0x434F4C52u)%4u);if(finish==FLOOR_WOOD||finish==FLOOR_PARQUET)return palette==0?make_float3(.42f,.25f,.12f):(palette==1?make_float3(.23f,.12f,.065f):(palette==2?make_float3(.61f,.46f,.29f):make_float3(.37f,.31f,.25f)));if(finish==FLOOR_CARPET)return palette==0?make_float3(.25f,.31f,.33f):(palette==1?make_float3(.40f,.34f,.28f):(palette==2?make_float3(.28f,.32f,.22f):make_float3(.39f,.22f,.20f)));return palette==0?make_float3(.61f,.58f,.49f):(palette==1?make_float3(.29f,.34f,.36f):(palette==2?make_float3(.60f,.49f,.39f):make_float3(.42f,.46f,.40f)));}
 __device__ void buildingDNA(float* s,unsigned int key,float value,unsigned int style){s[3]=(float)(key&65535u);s[4]=(float)(key>>16);s[5]=houseWidth(key,value);s[6]=houseDepth(key,value);s[7]=randf(key^103u)<.8f?0:(float)(1u+mix(key^103u)%2u);s[8]=(float)(value<.35f?3+(int)(mix(key^104u)%2u):(value>.65f?2:2+(int)(mix(key^104u)%2u)));s[9]=(float)(randf(key^105u)<.8f?mix(style^105u)%3u:mix(key^105u)%3u);s[10]=0.0f;for(int f=1;f<=4;++f)s[10+f]=s[9+f]+3.08f+.27f*randf(mix(key^(unsigned int)f)^106u);}
 // Disjoint seed namespaces: region terrain and shared road edges never depend on house DNA.
@@ -131,7 +147,7 @@ __device__ float3 outdoorMaterial(float* s,float3 p,float footprint){
     float noise=randf((unsigned int)(int)floorf(wx*70)*73856093u^(unsigned int)(int)floorf(wz*70)*19349663u^seed),micro=clamp(1-footprint*35);
     float best=1e9f,dist=0,along=0,length=0,width=0;int kind=0,edgeX=0,edgeZ=0,edgeAxis=0;bool pedestrian=false;
     for(int dz=-1;dz<=1;++dz)for(int dx=-1;dx<=1;++dx)for(int axis=0;axis<2;++axis){Street r=street(seed,cx+dx,cz+dz,axis);if(!r.active)continue;float3 d=r.b-r.a;float len=sqrtf(dot(d,d)),t=clamp(dot(point-r.a,d)/(len*len));float3 q=closestStreet(r,point);float dd=sqrtf(dot(point-q,point-q)),w=r.width;if(r.terminal&&dot(point-r.b,point-r.b)<64.0f){dd=sqrtf(dot(point-r.b,point-r.b));w=8.0f;}if(dd-w<best){best=dd-w;dist=dd;along=t*len;length=len;width=w;kind=r.kind;edgeX=cx+dx;edgeZ=cz+dz;edgeAxis=axis;}if(r.terminal){float3 pathPoint=closestSegment(r.b,r.end,point);if(dot(point-pathPoint,point-pathPoint)<.8f*.8f)pedestrian=true;}}
-    bool path=false;Street front=frontage(seed,cx,cz);float3 center=make_float3(cx*40.0f,0,cz*40.0f),delta=closestStreet(front,center)-center;float len=sqrtf(dot(delta,delta));float longitudinal=dot(point-center,delta)/len,lateral=fabsf((point.x-center.x)*delta.z-(point.z-center.z)*delta.x)/len;path=len<35&&longitudinal>7&&longitudinal<len&&lateral<1.35f;
+    bool path=false;Street front=frontage(seed,cx,cz);float3 center=make_float3(cx*40.0f,0,cz*40.0f),delta=closestStreet(front,center)-center;float len=sqrtf(dot(delta,delta));unsigned int homeKey=regionKey(neighbourhoodKey(seed,cx,cz)^0x484F5553u,cx,cz);float shift=entranceX(homeKey)*houseWidth(homeKey,propertyValue(seed,cx,cz));center=center+make_float3(-delta.z/fmaxf(.001f,len),0,delta.x/fmaxf(.001f,len))*shift;delta=closestStreet(front,center)-center;len=sqrtf(dot(delta,delta));float longitudinal=dot(point-center,delta)/fmaxf(.001f,len),lateral=fabsf((point.x-center.x)*delta.z-(point.z-center.z)*delta.x)/len;path=len<35&&longitudinal>7&&longitudinal<len&&lateral<1.35f;
     if(best<0){color=make_float3(.105f,.12f,.125f);
         Street pa=street(seed,edgeX,edgeZ,1-edgeAxis),pb=street(seed,edgeX-(edgeAxis==1?1:0),edgeZ-(edgeAxis==0?1:0),1-edgeAxis);
         int bx=edgeX+(edgeAxis==0?1:0),bz=edgeZ+(edgeAxis==1?1:0);Street qa=street(seed,bx,bz,1-edgeAxis),qb=street(seed,bx-(edgeAxis==1?1:0),bz-(edgeAxis==0?1:0),1-edgeAxis);
@@ -144,6 +160,7 @@ __device__ float3 outdoorMaterial(float* s,float3 p,float footprint){
 }
 __device__ Shape readShape(float* s,int index){int b=32+index*16;Shape o;o.lo=make_float3(s[b],s[b+1],s[b+2]);o.hi=make_float3(s[b+3],s[b+4],s[b+5]);o.color=make_float3(s[b+6],s[b+7],s[b+8]);o.mat=(int)s[b+9];o.solid=(int)s[b+10];o.origin=make_float3(s[b+13],0,s[b+14]);o.angle=s[b+15];o.id=(unsigned int)s[b+11]^((unsigned int)s[b+12]<<16);return o;}
 __device__ void box(float* s,float3 p,float3 half,int mat,float3 color,bool solid=true){
+ if(s[27]>=2){float3 a=planPoint(buildingKey(s),p-half),b=planPoint(buildingKey(s),p+half);p=(a+b)*.5f;half=(vmax(a,b)-vmin(a,b))*.5f;}
  int i=(int)s[0];if(i>=CAP){s[2]=1;return;}s[0]=(float)(i+1);p.x=p.x*s[5]+s[16];p.z=p.z*s[6]+s[17];half.x*=s[5];half.z*=s[6];float3 lo=p-half,hi=p+half;int b=32+i*16;
 
  s[b]=lo.x;s[b+1]=lo.y;s[b+2]=lo.z;s[b+3]=hi.x;s[b+4]=hi.y;s[b+5]=hi.z;s[b+6]=color.x;s[b+7]=color.y;s[b+8]=color.z;s[b+9]=(float)mat;s[b+10]=solid&&s[26]<.5f?1:0;s[b+11]=s[3];s[b+12]=s[4];s[b+13]=s[16];s[b+14]=s[17];s[b+15]=s[18];
@@ -212,18 +229,16 @@ __device__ void specialRoom(float* s,int type,int side,float y,float z,unsigned 
         box(s,make_float3(side*4.7f,y+.32f,z+1.4f),make_float3(.55f,.32f,.50f),WOOD,accent);
     }
 }
-__device__ void room(float* s,int floor,int side,int back){
-    float y=floorBase(s,floor),storey=floorBase(s,floor+1)-y,x=side*5.2f,z=roomZ(s,floor,side,back);unsigned int key=roomKey(s,floor,side,back);
+__device__ void furnishRoom(float* s,int floor,int side,int back){
+    float y=floorBase(s,floor),storey=floorBase(s,floor+1)-y,x=side*5.2f,z=furnitureZ(s,floor,side,back);unsigned int key=roomKey(s,floor,side,back);
     float3 accent=roomAccent(key);
     int type=roomType(s,floor,side,back);
-    int finish=floorFinish(key,type);float split=roomSplit(s,floor,side),nearZ=back?split:-8.0f,farZ=back?5.4f:split;
-    box(s,make_float3(side*5.35f,y+.007f,z),make_float3(3.43f,.007f,(farZ-nearZ)*.5f-.11f),finish,floorColor(key,finish),false);
     specialRoom(s,type,side,y,z,key,accent);
     // Common details, ceiling fixtures, rug, art, power outlets.
     box(s,make_float3(x,y+storey-.18f,z),make_float3(.68f,.035f,.035f),LIGHT,make_float3(1,.81f,.51f),false);
     if(type==0||type==4||type==5||type==10)box(s,make_float3(x,y+.025f,z),make_float3(1.55f,.009f,1.55f),FABRIC,accent*.70f,false);
     art(s,side*8.67f,y+1.65f,z-2.05f,side,key);
-    for(int j=0;j<2;++j)box(s,make_float3(side*1.84f,y+.35f,z+(j?1.5f:-1.6f)),make_float3(.025f,.06f,.09f),PLASTER,make_float3(.86f,.84f,.77f),false);
+    for(int j=0;j<2&&!openWing(s,side);++j)box(s,make_float3(side*1.84f,y+.35f,z+(j?1.5f:-1.6f)),make_float3(.025f,.06f,.09f),PLASTER,make_float3(.86f,.84f,.77f),false);
     plant(s,side*7.8f,y,z+1.7f,.9f);
     if(type==0 || type==7){
         // Sofa at the outer side, low table, lounge chair.
@@ -268,6 +283,7 @@ __device__ void room(float* s,int floor,int side,int back){
     }
 }
 
+__device__ void room(float* s,int floor,int side,int back){unsigned int key=roomKey(s,floor,side,back);int finish=roomFinish(s,floor,side,back);float a=roomNear(s,floor,side,back),b=roomFar(s,floor,side,back);box(s,make_float3(side*(openWing(s,side)?5.2f:5.35f),floorBase(s,floor)+.007f,(a+b)*.5f),make_float3(openWing(s,side)?3.60f:3.43f,.007f,(b-a)*.5f-.11f),finish,floorColor(key,finish),false);furnishRoom(s,floor,side,back);if(sideRooms(s,side)==1)furnishRoom(s,floor,side,1);}
 __device__ void sideWindow(float* s,float x,float y,float z){
     box(s,make_float3(x,y+1.8f,z),make_float3(.025f,.80f,1.05f),s[15]<.5f&&s[25]>.5f?VIRTUAL_WINDOW:GLASS,s[15]<.5f&&s[25]>.5f?make_float3(s[19],s[5],s[6]):make_float3(.79f,.86f,.88f));
     for(int j=-1;j<=1;j+=2){box(s,make_float3(x,y+1.8f+j*.84f,z),make_float3(.14f,.055f,1.14f),METAL,make_float3(.16f,.18f,.18f));
@@ -282,35 +298,39 @@ __device__ void emitBuilding(float* s,const float* Districts,unsigned int seed,i
     float value=plot.value;s[19]=value;s[25]=(float)virtualEnabled;unsigned int style=neighbourhoodKey(seed,lotX,lotZ);
     buildingDNA(s,key,value,style);
     if(!plot.available){s[8]=0;s[15]=0;for(int f=0;f<=4;++f)s[10+f]=0;return;}
-    int floors=(int)s[8];
+    int floors=(int)s[8];float entryX=entranceX(key);
     float3 plaster=lerp(make_float3(.64f,.63f,.57f),make_float3(.87f,.85f,.79f),value),brick=make_float3(.40f,.20f,.115f),floorWood=make_float3(.52f,.32f,.17f),dark=make_float3(.13f,.16f,.15f);
     int facade=(int)s[7]==1?CONCRETE:(value>.65f?PLASTER:BRICK);brick=lerp(make_float3(.29f,.12f,.07f),make_float3(.49f,.35f,.22f),randf(key^107u));if(facade==CONCRETE)brick=make_float3(.56f,.58f,.54f);if(facade==PLASTER)brick=plaster;else brick=brick*(.85f+.25f*value);
 
 
 
     for(int f=0;f<=floors;++f){float y=floorBase(s,f),storey=f==floors?3.2f:floorBase(s,f+1)-y;
+        s[27]+=2;
         if(f==0||f==floors)box(s,make_float3(0,y-.12f,1.5f),make_float3(9.2f,.12f,9.7f),f==0?WOOD:CONCRETE,f==0?floorWood:plaster);
         else {between(s,make_float3(-9.2f,y-.20f,-8.2f),make_float3(9.2f,y,5.5f),WOOD,floorWood);
             between(s,make_float3(-9.2f,y-.20f,5.5f),make_float3(-1.8f,y,11.2f),WOOD,floorWood);
             between(s,make_float3(1.8f,y-.20f,5.5f),make_float3(9.2f,y,11.2f),WOOD,floorWood);
             between(s,make_float3(-1.8f,y-.20f,10.2f),make_float3(1.8f,y,11.2f),WOOD,floorWood);}
+        s[27]-=2;
         if(f==floors)break;
         // Front facade has an open entrance below, a broad glazed bay above.
-        box(s,make_float3(-5.2f,y+storey*.5f,-8.1f),make_float3(3.8f,storey*.5f,.16f),facade,brick);box(s,make_float3(5.2f,y+storey*.5f,-8.1f),make_float3(3.8f,storey*.5f,.16f),facade,brick);
-        box(s,make_float3(0,y+(2.7f+storey)*.5f,-8.1f),make_float3(1.4f,(storey-2.7f)*.5f,.16f),CONCRETE,plaster);
-        if(f>0){box(s,make_float3(0,y+.5f,-8.1f),make_float3(1.4f,.5f,.16f),facade,brick);box(s,make_float3(0,y+1.85f,-8.1f),make_float3(1.38f,.85f,.025f),!resident&&virtualEnabled?VIRTUAL_WINDOW:GLASS,!resident&&virtualEnabled?make_float3(value,s[5],s[6]):make_float3(.8f,.9f,.9f));}
+        box(s,make_float3((-9+entryX-1.4f)*.5f,y+storey*.5f,-8.1f),make_float3((entryX+7.6f)*.5f,storey*.5f,.16f),facade,brick);box(s,make_float3((9+entryX+1.4f)*.5f,y+storey*.5f,-8.1f),make_float3((7.6f-entryX)*.5f,storey*.5f,.16f),facade,brick);
+        box(s,make_float3(entryX,y+(2.7f+storey)*.5f,-8.1f),make_float3(1.4f,(storey-2.7f)*.5f,.16f),CONCRETE,plaster);
+        if(f>0){box(s,make_float3(entryX,y+.5f,-8.1f),make_float3(1.4f,.5f,.16f),facade,brick);box(s,make_float3(entryX,y+1.85f,-8.1f),make_float3(1.38f,.85f,.025f),!resident&&virtualEnabled?VIRTUAL_WINDOW:GLASS,!resident&&virtualEnabled?make_float3(value,s[5],s[6]):make_float3(.8f,.9f,.9f));}
         box(s,make_float3(0,y+storey*.5f,11.1f),make_float3(9.1f,storey*.5f,.15f),facade,brick);
         for(int side=-1;side<=1;side+=2){
             // Side facade uses actual apertures, with solid sills and lintels.
             box(s,make_float3(side*9,y+.45f,1.5f),make_float3(.16f,.45f,9.5f),facade,brick);
             box(s,make_float3(side*9,y+(2.7f+storey)*.5f,1.5f),make_float3(.16f,(storey-2.7f)*.5f,9.5f),facade,brick);
-            float last=-8;for(int j=0;j<3;++j){float z=j<2?roomZ(s,f,side,j):8.1f;float start=z-1.12f;
+            float last=-8;for(int j=0;j<3;++j){int aperture=planFamily(key)==3?2-j:j;float z=aperture<2?windowZ(s,f,side,aperture):planZ(key,8.1f);float start=z-1.12f;
                 if(start>last)box(s,make_float3(side*9,y+1.8f,(start+last)*.5f),make_float3(.16f,.9f,(start-last)*.5f),facade,brick);
                 sideWindow(s,side*9,y,z);last=z+1.12f;}
             box(s,make_float3(side*9,y+1.8f,(last+11)*.5f),make_float3(.16f,.9f,(11-last)*.5f),facade,brick);
             if(resident){
+            s[27]+=2;
             // Shared hallway wall: two real door openings per side.
-            float start=-8;for(int r=0;r<2;++r){float z=roomZ(s,f,side,r);
+            float start=-8;for(int r=0;r<sideRooms(s,side);++r){float z=roomZ(s,f,side,r);
+                if(!openWing(s,side)){
                 box(s,make_float3(side*1.7f,y+storey*.5f,(start+z-.72f)*.5f),make_float3(.11f,storey*.5f,(z-.72f-start)*.5f),PLASTER,plaster);
                 box(s,make_float3(side*1.7f,y+(2.4f+storey)*.5f,z),make_float3(.11f,(storey-2.4f)*.5f,.72f),PLASTER,plaster);
                 for(int j=-1;j<=1;j+=2)box(s,make_float3(side*1.7f,y+1.2f,z+j*.76f),make_float3(.16f,1.2f,.045f),WOOD,make_float3(.30f,.20f,.12f));
@@ -318,20 +338,21 @@ __device__ void emitBuilding(float* s,const float* Districts,unsigned int seed,i
                 // Open door leaf sits alongside the room-side wall.
                 box(s,make_float3(side*2.39f,y+1.17f,z+.79f),make_float3(.65f,1.17f,.04f),WOOD,make_float3(.47f,.30f,.17f));
                 box(s,make_float3(side*2.93f,y+1.0f,z+.73f),make_float3(.075f,.025f,.04f),METAL,dark,false);
-                start=z+.72f;room(s,f,side,r);
+                }start=z+.72f;room(s,f,side,r);
             }
-            box(s,make_float3(side*1.7f,y+storey*.5f,(start+5.4f)*.5f),make_float3(.11f,storey*.5f,(5.4f-start)*.5f),PLASTER,plaster);
-            box(s,make_float3(side*5.35f,y+storey*.5f,roomSplit(s,f,side)),make_float3(3.55f,storey*.5f,.10f),PLASTER,plaster);
-            box(s,make_float3(side*5.35f,y+storey*.5f,5.4f),make_float3(3.55f,storey*.5f,.10f),PLASTER,plaster);
+            if(!openWing(s,side))box(s,make_float3(side*1.7f,y+storey*.5f,(start+roomEnd(s))*.5f),make_float3(.11f,storey*.5f,(roomEnd(s)-start)*.5f),PLASTER,plaster);
+            if(sideRooms(s,side)==2)box(s,make_float3(side*5.35f,y+storey*.5f,roomSplit(s,f,side)),make_float3(3.55f,storey*.5f,.10f),PLASTER,plaster);
+            box(s,make_float3(side*5.35f,y+storey*.5f,roomEnd(s)),make_float3(3.55f,storey*.5f,.10f),PLASTER,plaster);
             // Skirting and ceiling trim, separated around door openings.
-            for(int seg=0;seg<3;++seg){float a=seg==0?-8:(seg==1?roomZ(s,f,side,0)+.8f:roomZ(s,f,side,1)+.8f),b=seg==0?roomZ(s,f,side,0)-.8f:(seg==1?roomZ(s,f,side,1)-.8f:5.4f);
+            for(int seg=0;seg<3&&!openWing(s,side);++seg){float a=seg==0?-8:(seg==1?roomZ(s,f,side,0)+.8f:roomZ(s,f,side,1)+.8f),b=seg==0?roomZ(s,f,side,0)-.8f:(seg==1?roomZ(s,f,side,1)-.8f:5.4f);
                 box(s,make_float3(side*1.55f,y+.075f,(a+b)*.5f),make_float3(.035f,.075f,(b-a)*.5f),WOOD,make_float3(.45f,.32f,.20f),false);}
-            box(s,make_float3(side*1.53f,y+storey-.23f,-1.3f),make_float3(.09f,.065f,6.6f),PLASTER,make_float3(.89f,.86f,.76f),false);
-            plant(s,side*3.0f,y,9.5f,1.2f);
+            if(!openWing(s,side))box(s,make_float3(side*1.53f,y+storey-.23f,-1.3f),make_float3(.09f,.065f,6.6f),PLASTER,make_float3(.89f,.86f,.76f),false);
+            plant(s,side*3.0f,y,9.5f,1.2f);s[27]-=2;
             }
         }
-        if(resident)for(int j=0;j<4;++j){if(j==0){unsigned int hallKey=mix(key^(unsigned int)f^0x48414C4Cu);int finish=floorFinish(hallKey,0);box(s,make_float3(0,y+.007f,-1.3f),make_float3(1.58f,.007f,6.7f),finish,floorColor(hallKey,finish),false);}float z=-6+j*3.5f;box(s,make_float3(0,y+storey-.24f,z),make_float3(.45f,.028f,.05f),LIGHT,make_float3(1,.83f,.57f),false);}
+        if(resident)for(int j=0;j<4;++j){s[27]+=2;if(j==0){unsigned int hallKey=mix(key^(unsigned int)f^0x48414C4Cu);int finish=floorFinish(hallKey,0);box(s,make_float3(0,y+.007f,-1.3f),make_float3(1.58f,.007f,6.7f),finish,floorColor(hallKey,finish),false);}float z=-6+j*3.5f;box(s,make_float3(0,y+storey-.24f,z),make_float3(.45f,.028f,.05f),LIGHT,make_float3(1,.83f,.57f),false);s[27]-=2;}
         if(resident&&f<floors-1){
+            s[27]+=2;
             // Two flights, ten address-derived risers each, with a broad intermediate landing.
             for(int i=0;i<10;++i){float height=(i+1)*storey/20.0f;
                 box(s,make_float3(-.94f,y+height-.08f,5.65f+i*.30f),make_float3(.73f,.08f,.15f),CONCRETE,make_float3(.60f,.58f,.51f));
@@ -345,21 +366,21 @@ __device__ void emitBuilding(float* s,const float* Districts,unsigned int seed,i
             }
             box(s,make_float3(0,y+storey*.5f-.1f,9.35f),make_float3(1.78f,.10f,.85f),CONCRETE,make_float3(.59f,.57f,.5f));
             box(s,make_float3(0,y+storey*.5f+.01f,9.35f),make_float3(1.78f,.01f,.85f),WOOD,make_float3(.43f,.28f,.16f));
-            box(s,make_float3(0,y+storey*.5f+.52f,10.18f),make_float3(1.8f,.50f,.035f),GLASS,make_float3(.83f,.90f,.89f));
+            box(s,make_float3(0,y+storey*.5f+.52f,10.18f),make_float3(1.8f,.50f,.035f),GLASS,make_float3(.83f,.90f,.89f));s[27]-=2;
         }
     }
-    if(!resident&&virtualEnabled)box(s,make_float3(0,1.35f,-8.12f),make_float3(1.38f,1.35f,.015f),VIRTUAL_DOOR,make_float3(value,s[5],s[6]),false);
+    if(!resident&&virtualEnabled)box(s,make_float3(entryX,1.35f,-8.12f),make_float3(1.38f,1.35f,.015f),VIRTUAL_DOOR,make_float3(value,s[5],s[6]),false);
     // Entrance portal, canopy, facade bands and planted setbacks.
-    for(int side=-1;side<=1;side+=2){box(s,make_float3(side*1.48f,1.4f,-8.4f),make_float3(.12f,1.4f,.33f),CONCRETE,make_float3(.68f,.64f,.55f));
-        box(s,make_float3(side*2.2f,1.85f,-8.29f),make_float3(.065f,.22f,.055f),LIGHT,make_float3(1,.7f,.35f),false);}
-    box(s,make_float3(0,2.84f,-8.7f),make_float3(2.1f,.10f,.90f),CONCRETE,make_float3(.65f,.62f,.54f));
+    for(int side=-1;side<=1;side+=2){box(s,make_float3(entryX+side*1.48f,1.4f,-8.4f),make_float3(.12f,1.4f,.33f),CONCRETE,make_float3(.68f,.64f,.55f));
+        box(s,make_float3(entryX+side*2.2f,1.85f,-8.29f),make_float3(.065f,.22f,.055f),LIGHT,make_float3(1,.7f,.35f),false);}
+    box(s,make_float3(entryX,2.84f,-8.7f),make_float3(2.1f,.10f,.90f),CONCRETE,make_float3(.65f,.62f,.54f));
     for(int f=1;f<=floors;++f){box(s,make_float3(0,floorBase(s,f),-8.27f),make_float3(9.3f,.10f,.12f),CONCRETE,make_float3(.59f,.57f,.49f));
         for(int side=-1;side<=1;side+=2)box(s,make_float3(side*9.2f,floorBase(s,f),1.5f),make_float3(.10f,.10f,9.7f),CONCRETE,make_float3(.59f,.57f,.49f));}
     // Facade families remain exact geometry even for distant query buildings.
     int character=(int)(mix(key^814u)%3u);
-    if(character==0){for(int side=-1;side<=1;side+=2)for(int f=0;f<floors;++f)for(int r=0;r<2;++r){float wz=roomZ(s,f,side,r),yy=floorBase(s,f);for(int edge=-1;edge<=1;edge+=2)box(s,make_float3(side*9.22f,yy+1.8f,wz+edge*1.40f),make_float3(.06f,.78f,.23f),WOOD,dark);}}
-    if(character==1){for(int side=-1;side<=1;side+=2)for(int col=0;col<2;++col)box(s,make_float3(side*(col?8.7f:3.5f),floorBase(s,floors)*.5f,-8.32f),make_float3(.18f,floorBase(s,floors)*.5f,.19f),CONCRETE,plaster);}
-    if(character==2){for(int side=-1;side<=1;side+=2)box(s,make_float3(side*1.9f,1.38f,-9.35f),make_float3(.09f,1.38f,.09f),WOOD,dark);box(s,make_float3(0,2.84f,-9.15f),make_float3(2.1f,.10f,.55f),WOOD,dark);}
+    if(character==0){for(int side=-1;side<=1;side+=2)for(int f=0;f<floors;++f)for(int r=0;r<2;++r){float wz=windowZ(s,f,side,r),yy=floorBase(s,f);for(int edge=-1;edge<=1;edge+=2)box(s,make_float3(side*9.22f,yy+1.8f,wz+edge*1.40f),make_float3(.06f,.78f,.23f),WOOD,dark);}}
+    if(character==1){for(int side=-1;side<=1;side+=2)for(int col=0;col<2;++col)if(fabsf(side*(col?8.7f:3.5f)-entryX)>1.65f)box(s,make_float3(side*(col?8.7f:3.5f),floorBase(s,floors)*.5f,-8.32f),make_float3(.18f,floorBase(s,floors)*.5f,.19f),CONCRETE,plaster);}
+    if(character==2){for(int side=-1;side<=1;side+=2)box(s,make_float3(entryX+side*1.9f,1.38f,-9.35f),make_float3(.09f,1.38f,.09f),WOOD,dark);box(s,make_float3(entryX,2.84f,-9.15f),make_float3(2.1f,.10f,.55f),WOOD,dark);}
     float roofY=floorBase(s,floors);int roof=(int)s[9];
     if(character!=1)box(s,make_float3(-6.8f,roofY+1.05f,7.5f),make_float3(.46f,1.05f,.55f),BRICK,brick);
     if(roof==0){for(int side=-1;side<=1;side+=2){box(s,make_float3(side*9.05f,roofY+.3f,1.5f),make_float3(.10f,.3f,9.65f),CONCRETE,plaster);box(s,make_float3(0,roofY+.3f,1.5f+side*9.55f),make_float3(9.1f,.3f,.10f),CONCRETE,plaster);}for(int j=0;j<4;++j)plant(s,-7+j*4.5f,roofY,9.3f,1.25f);}
@@ -385,7 +406,7 @@ __global__ void generateScene(float* s,const float* Districts,unsigned int seed,
     float overflow=s[2];for(int i=1;i<19;++i)s[i]=header[i];s[2]=overflow;
 }
 
-__global__ void describeLayout(float* s,float* Plan){if(threadIdx.x||blockIdx.x)return;for(int i=0;i<64;++i)Plan[i]=0;Plan[0]=s[5];Plan[1]=s[6];Plan[2]=s[8];Plan[3]=s[9];Plan[4]=s[7];Plan[5]=s[3];Plan[6]=s[4];Plan[7]=s[15];Plan[13]=s[18];Plan[14]=districtValue((unsigned int)s[22],(int)s[20],(int)s[21]);Plan[15]=propertyValue((unsigned int)s[22],(int)s[20],(int)s[21]);for(int f=0;f<=4;++f)Plan[8+f]=floorBase(s,f);for(int f=0;f<(int)s[8];++f)for(int r=0;r<4;++r){int side=r%2?1:-1;Plan[16+f*4+r]=roomZ(s,f,side,r/2)*s[6];Plan[32+f*4+r]=(float)roomType(s,f,side,r/2);Plan[48+f*4+r]=(float)floorFinish(roomKey(s,f,side,r/2),roomType(s,f,side,r/2));}}
+__global__ void describeLayout(float* s,float* Plan){if(threadIdx.x||blockIdx.x)return;for(int i=0;i<256;++i)Plan[i]=0;Plan[0]=s[5];Plan[1]=s[6];Plan[2]=s[8];Plan[3]=s[9];Plan[4]=s[7];Plan[5]=s[3];Plan[6]=s[4];Plan[7]=s[15];Plan[13]=s[18];Plan[14]=districtValue((unsigned int)s[22],(int)s[20],(int)s[21]);Plan[15]=propertyValue((unsigned int)s[22],(int)s[20],(int)s[21]);Plan[64]=(float)planFamily(buildingKey(s));Plan[65]=hallOffset(buildingKey(s));Plan[66]=entranceX(buildingKey(s));Plan[67]=planFamily(buildingKey(s))==3?1:0;Plan[68]=s[8]*(sideRooms(s,-1)+sideRooms(s,1));for(int f=0;f<=4;++f)Plan[8+f]=floorBase(s,f);for(int f=0;f<(int)s[8];++f)for(int r=0;r<4;++r){int side=r%2?1:-1;Plan[16+f*4+r]=roomZ(s,f,side,r/2)*s[6];Plan[32+f*4+r]=(float)roomType(s,f,side,r/2);Plan[48+f*4+r]=(float)roomFinish(s,f,side,r/2);int b=80+(f*4+r)*8;Plan[b]=r/2<sideRooms(s,side)?1:0;float3 a=planPoint(buildingKey(s),make_float3(side<0?-8.8f:1.81f,0,roomNear(s,f,side,r/2))),z=planPoint(buildingKey(s),make_float3(side<0?-1.81f:8.8f,0,roomFar(s,f,side,r/2)));Plan[b+1]=fminf(a.x,z.x)*s[5];Plan[b+2]=fmaxf(a.x,z.x)*s[5];Plan[b+3]=fminf(a.z,z.z)*s[6];Plan[b+4]=fmaxf(a.z,z.z)*s[6];Plan[b+5]=planX(buildingKey(s),side*1.7f)*s[5];Plan[b+6]=planZ(buildingKey(s),roomZ(s,f,side,r/2))*s[6];Plan[b+7]=openWing(s,side)?1:0;}}
 
 
 __device__ unsigned int spread(unsigned int x){x&=1023u;x=(x|(x<<16))&0x030000ffu;x=(x|(x<<8))&0x0300f00fu;x=(x|(x<<4))&0x030c30c3u;x=(x|(x<<2))&0x09249249u;return x;}
@@ -396,6 +417,7 @@ __global__ void parents(float* nodes,int start){int i=(int)(blockIdx.x*blockDim.
 __device__ float bound(float3 ro,float3 inv,float3 lo,float3 hi,float maxT){if(lo.x>hi.x||lo.y>hi.y||lo.z>hi.z)return 1e30f;float3 a=(lo-ro)*inv,b=(hi-ro)*inv;float3 mn=vmin(a,b),mx=vmax(a,b);float near=fmaxf(mn.x,fmaxf(mn.y,mn.z)),far=fminf(mx.x,fminf(mx.y,mx.z));return far>=fmaxf(near,.001f)&&near<maxT?fmaxf(near,.001f):1e30f;}
 
 __device__ void queryBox(float* s,float3 p,float3 half,int mat,float3 color,bool solid=true){
+ if(s[27]>=2){float3 a=planPoint(buildingKey(s),p-half),b=planPoint(buildingKey(s),p+half);p=(a+b)*.5f;half=(vmax(a,b)-vmin(a,b))*.5f;}
  p.x=p.x*s[5]+s[16];p.z=p.z*s[6]+s[17];half.x*=s[5];half.z*=s[6];Shape o;o.lo=p-half;o.hi=p+half;o.color=color;o.origin=make_float3(s[16],0,s[17]);o.angle=s[18];o.id=buildingKey(s);o.mat=mat;o.solid=solid?1:0;
  Hit h=intersectShape(o,make_float3(s[48],s[49],s[50]),make_float3(s[51],s[52],s[53]),s[28],s[54]>.5f);if(h.id<0)return;
  s[28]=h.t;s[29]=h.n.x;s[30]=h.n.y;s[31]=h.n.z;s[55]=1;
@@ -459,10 +481,11 @@ __device__ float3 material(float* s,Shape o,float3 p,float3 n,float footprint){i
 __device__ float3 sky(float3 rd){float t=clamp(rd.y*.7f+.35f);float3 c=lerp(make_float3(.76f,.79f,.76f),make_float3(.28f,.48f,.68f),t);float sun=powf(fmaxf(0,dot(rd,norm(make_float3(-.7f,1,-.5f)))),900);return c+make_float3(6,4.8f,3.1f)*sun;}
 // Analytic interior mapping lives beside the physical grammar. No mesh allocation,
 // extra shader module, texture atlas, or dependency is needed for a visible opening.
-__device__ void virtualDNA(float* q,Shape opening){for(int i=0;i<32;++i)q[i]=0;buildingDNA(q,opening.id,opening.color.x,0);q[5]=opening.color.y;q[6]=opening.color.z;}
-__global__ void probeResidency(float* s,const float* Districts,const float* C,float* Plan){if(threadIdx.x||blockIdx.x)return;int dx=(int)floorf((C[0]+20)/40),dz=(int)floorf((C[2]+20)/40),x=(int)s[20]+dx,z=(int)s[21]+dz;unsigned int seed=(unsigned int)s[22],key=regionKey(neighbourhoodKey(seed,x,z)^0x484F5553u,x,z);Plot p=cachedPlot(Districts,seed,x,z,1);float sx=houseWidth(key,p.value),sz=houseDepth(key,p.value);float3 local=rotateY(make_float3(C[0]-dx*40,C[1],C[2]-dz*40),-p.angle);float roof=0;int floors=p.value<.35f?3+(int)(mix(key^104u)%2u):(p.value>.65f?2:2+(int)(mix(key^104u)%2u));for(int f=1;f<=floors;++f)roof+=3.08f+.27f*randf(mix(key^(unsigned int)f)^106u);bool retained=s[15]>.5f&&dx==0&&dz==0;bool inside=fabsf(local.x)<9.2f*sx&&local.z>-8.3f*sz&&local.z<11.3f*sz&&local.y<roof+2;float gap=-8.1f*sz-local.z,yaw=C[3]-p.angle;float3 view=make_float3(sinf(yaw)*cosf(C[4]),sinf(C[4]),cosf(yaw)*cosf(C[4])),toDoor=norm(make_float3(-local.x,-.30f-local.y,gap));bool needed=retained||gap<2.5f||dot(view,toDoor)>.25f;bool entrance=needed&&fabsf(local.x)<(retained?5:3.5f)*sx&&local.z>-8.1f*sz-(retained?11:8)&&local.z<-6.1f*sz&&local.y<3;Plan[46]=p.available&&(inside||entrance)?1:0;}
-__device__ Hit virtualBox(float* q,float3 ro,float3 rd,Hit best,float3 center,float3 half,int mat,float3 color){Shape o;center.x*=q[5];center.z*=q[6];half.x*=q[5];half.z*=q[6];o.lo=center-half;o.hi=center+half;o.color=color;o.mat=mat;o.id=buildingKey(q);o.origin=make_float3(0,0,0);o.angle=0;o.solid=0;Hit h=intersectShape(o,ro,rd,best.t,false);return h.id>=0?h:best;}
-__device__ bool virtualBounds(float* q,float3 ro,float3 rd,float limit,float3 center,float3 half){center.x*=q[5];center.z*=q[6];half.x*=q[5];half.z*=q[6];float3 inv=make_float3(1/(fabsf(rd.x)<1e-8f?(rd.x<0?-1e-8f:1e-8f):rd.x),1/(fabsf(rd.y)<1e-8f?(rd.y<0?-1e-8f:1e-8f):rd.y),1/(fabsf(rd.z)<1e-8f?(rd.z<0?-1e-8f:1e-8f):rd.z));return bound(ro,inv,center-half,center+half,limit)<limit;}
+__device__ void virtualDNA(float* q,Shape opening){for(int i=0;i<32;++i)q[i]=0;buildingDNA(q,opening.id,opening.color.x,0);q[5]=opening.color.y;q[6]=opening.color.z;q[28]=hallOffset(opening.id);q[29]=planFamily(opening.id)==3?1:0;}
+__device__ float3 virtualPoint(float* q,float3 p){float h=q[28],x=p.x;return make_float3(x< -1.8f?-9+(x+9)*(7.2f+h)/7.2f:(x>1.8f?9-(9-x)*(7.2f-h)/7.2f:x+h),p.y,q[29]>.5f?3-p.z:p.z);}
+__global__ void probeResidency(float* s,const float* Districts,const float* C,float* Plan){if(threadIdx.x||blockIdx.x)return;int dx=(int)floorf((C[0]+20)/40),dz=(int)floorf((C[2]+20)/40),x=(int)s[20]+dx,z=(int)s[21]+dz;unsigned int seed=(unsigned int)s[22],key=regionKey(neighbourhoodKey(seed,x,z)^0x484F5553u,x,z);Plot p=cachedPlot(Districts,seed,x,z,1);float sx=houseWidth(key,p.value),sz=houseDepth(key,p.value);float3 local=rotateY(make_float3(C[0]-dx*40,C[1],C[2]-dz*40),-p.angle);float roof=0;int floors=p.value<.35f?3+(int)(mix(key^104u)%2u):(p.value>.65f?2:2+(int)(mix(key^104u)%2u));for(int f=1;f<=floors;++f)roof+=3.08f+.27f*randf(mix(key^(unsigned int)f)^106u);bool retained=s[15]>.5f&&dx==0&&dz==0;bool inside=fabsf(local.x)<9.2f*sx&&local.z>-8.3f*sz&&local.z<11.3f*sz&&local.y<roof+2;float gap=-8.1f*sz-local.z,yaw=C[3]-p.angle;float3 view=make_float3(sinf(yaw)*cosf(C[4]),sinf(C[4]),cosf(yaw)*cosf(C[4])),toDoor=norm(make_float3(entranceX(key)*sx-local.x,-.30f-local.y,gap));bool needed=retained||gap<2.5f||dot(view,toDoor)>.25f;bool entrance=needed&&fabsf(local.x-entranceX(key)*sx)<(retained?5:3.5f)*sx&&local.z>-8.1f*sz-(retained?11:8)&&local.z<-6.1f*sz&&local.y<3;Plan[46]=p.available&&(inside||entrance)?1:0;}
+__device__ Hit virtualBox(float* q,float3 ro,float3 rd,Hit best,float3 center,float3 half,int mat,float3 color){Shape o;float3 a=virtualPoint(q,center-half),b=virtualPoint(q,center+half);center=(a+b)*.5f;half=(vmax(a,b)-vmin(a,b))*.5f;center.x*=q[5];center.z*=q[6];half.x*=q[5];half.z*=q[6];o.lo=center-half;o.hi=center+half;o.color=color;o.mat=mat;o.id=buildingKey(q);o.origin=make_float3(0,0,0);o.angle=0;o.solid=0;Hit h=intersectShape(o,ro,rd,best.t,false);return h.id>=0?h:best;}
+__device__ bool virtualBounds(float* q,float3 ro,float3 rd,float limit,float3 center,float3 half){float3 a=virtualPoint(q,center-half),b=virtualPoint(q,center+half);center=(a+b)*.5f;half=(vmax(a,b)-vmin(a,b))*.5f;center.x*=q[5];center.z*=q[6];half.x*=q[5];half.z*=q[6];float3 inv=make_float3(1/(fabsf(rd.x)<1e-8f?(rd.x<0?-1e-8f:1e-8f):rd.x),1/(fabsf(rd.y)<1e-8f?(rd.y<0?-1e-8f:1e-8f):rd.y),1/(fabsf(rd.z)<1e-8f?(rd.z<0?-1e-8f:1e-8f):rd.z));return bound(ro,inv,center-half,center+half,limit)<limit;}
 __device__ Hit virtualChair(float* q,float3 ro,float3 rd,Hit h,float x,float y,float z,float3 accent,int face=1){h=virtualBox(q,ro,rd,h,make_float3(x,y+.45f,z),make_float3(.24f,.055f,.23f),UPHOLSTERY,accent);h=virtualBox(q,ro,rd,h,make_float3(x,y+.77f,z+face*.20f),make_float3(.24f,.28f,.05f),UPHOLSTERY,accent);for(int a=-1;a<=1;a+=2)for(int b=-1;b<=1;b+=2)h=virtualBox(q,ro,rd,h,make_float3(x+a*.18f,y+.21f,z+b*.17f),make_float3(.035f,.21f,.035f),METAL,make_float3(.11f,.13f,.13f));return h;}
 __device__ Hit virtualSpecialRoom(float* q,float3 start,float3 direction,Hit h,int type,int side,float y,float z,unsigned int key,float3 accent){
     if(type==8){
@@ -503,19 +526,25 @@ __device__ Hit virtualSpecialRoom(float* q,float3 start,float3 direction,Hit h,i
     }
 return h;}
 __device__ float3 virtualInterior(float* s,float3 ro,float3 rd,Hit entry,float pixelScale,int angleCulling){
- Shape opening=hitShape(s,entry);float q[32];virtualDNA(q,opening);float3 origin=rotateY(ro-opening.origin,-opening.angle),direction=rotateY(rd,-opening.angle),start=origin+direction*(entry.t+.07f);float sx=q[5],sz=q[6];int floor=0;for(int f=1;f<(int)q[8];++f)if(start.y>=floorBase(q,f))floor=f;float y=floorBase(q,floor),storey=floorBase(q,floor+1)-y;int side=start.x<0?-1:1;bool corridor=fabsf(start.x/sx)<2||start.z/sz>5.4f;int back=start.z/sz<roomSplit(q,floor,side)?0:1;float z=roomZ(q,floor,side,back),x=side*5.2f;unsigned int key=roomKey(q,floor,side,back);float3 accent=roomAccent(key),plaster=lerp(make_float3(.64f,.63f,.57f),make_float3(.87f,.85f,.79f),opening.color.x);int type=roomType(q,floor,side,back);Hit h;h.id=-1;h.t=80;h.n=make_float3(0,0,0);
- float nearZ=corridor?-8.0f:(back?roomSplit(q,floor,side)+.10f:-7.94f),farZ=corridor?11.0f:(back?5.3f:roomSplit(q,floor,side)-.10f),cx=corridor?0:side*5.25f,hw=corridor?1.59f:3.44f;
- unsigned int floorKey=corridor?mix(buildingKey(q)^(unsigned int)floor^0x48414C4Cu):key;int finish=floorFinish(floorKey,corridor?0:type);
+ Shape opening=hitShape(s,entry);float q[32];virtualDNA(q,opening);float3 origin=rotateY(ro-opening.origin,-opening.angle),direction=rotateY(rd,-opening.angle),start=origin+direction*(entry.t+.07f);float sx=q[5],sz=q[6];int floor=0;for(int f=1;f<(int)q[8];++f)if(start.y>=floorBase(q,f))floor=f;float y=floorBase(q,floor),storey=floorBase(q,floor+1)-y;float canonicalX=unplanX(buildingKey(q),start.x/sx),canonicalZ=planZ(buildingKey(q),start.z/sz);int side=canonicalX<0?-1:1;bool vestibule=canonicalZ>roomEnd(q),corridor=fabsf(canonicalX)<1.81f||vestibule;
+ // An entrance ray that crosses an open hall edge selects that room's existing
+ // virtual model. This avoids compiling a second complete furniture grammar.
+ if(corridor&&!vestibule)for(int wing=-1;wing<=1;wing+=2){if(!openWing(q,wing)||fabsf(direction.x)<1e-7f)continue;float edge=virtualPoint(q,make_float3(wing*1.6f,0,0)).x*sx,across=(edge-start.x)/direction.x,rz=planZ(buildingKey(q),(start.z+direction.z*across)/sz);float floorT=direction.y< -1e-7f?(y+.014f-start.y)/direction.y:1e9f,ceilingT=direction.y>1e-7f?(y+storey-.20f-start.y)/direction.y:1e9f;if(across>0&&across<80&&rz> -7.9f&&rz<roomEnd(q)&&floorT>across&&ceilingT>across){side=wing;canonicalZ=rz;corridor=false;break;}}
+ int back=canonicalZ<(sideRooms(q,side)==1?-1.3f:roomSplit(q,floor,side))?0:1,roomIndex=sideRooms(q,side)==1?0:back;float z=furnitureZ(q,floor,side,back),door=roomZ(q,floor,side,roomIndex),x=side*5.2f;unsigned int key=roomKey(q,floor,side,back);float3 accent=roomAccent(key),plaster=lerp(make_float3(.64f,.63f,.57f),make_float3(.87f,.85f,.79f),opening.color.x);int type=roomType(q,floor,side,back);Hit h;h.id=-1;h.t=80;h.n=make_float3(0,0,0);
+ float nearZ=corridor?(vestibule?roomEnd(q): -8.0f):roomNear(q,floor,side,roomIndex)+.10f,farZ=corridor?(vestibule?11.0f:roomEnd(q)):roomFar(q,floor,side,roomIndex)-.10f,cx=corridor?0:side*(openWing(q,side)?5.2f:5.35f),hw=corridor?(vestibule?8.8f:1.59f):(openWing(q,side)?3.6f:3.43f);
+ unsigned int floorKey=corridor?mix(buildingKey(q)^(unsigned int)floor^0x48414C4Cu):roomKey(q,floor,side,roomIndex);int finish=corridor?floorFinish(floorKey,0):roomFinish(q,floor,side,roomIndex);
  h=virtualBox(q,start,direction,h,make_float3(cx,y-.043f,(nearZ+farZ)*.5f),make_float3(hw,.057f,(farZ-nearZ)*.5f),finish,floorColor(floorKey,finish));
  h=virtualBox(q,start,direction,h,make_float3(cx,y+storey-.10f,(nearZ+farZ)*.5f),make_float3(hw,.10f,(farZ-nearZ)*.5f),PLASTER,make_float3(.80f,.79f,.73f));
  if(!corridor){
-  for(int end=0;end<2;++end){float a=end?z+.72f:nearZ,b=end?farZ:z-.72f;h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+storey*.5f,(a+b)*.5f),make_float3(.11f,storey*.5f,(b-a)*.5f),PLASTER,plaster);h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+1.2f,z+(end?.76f:-.76f)),make_float3(.16f,1.2f,.045f),WOOD,make_float3(.30f,.20f,.12f));}
-  h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+(2.4f+storey)*.5f,z),make_float3(.11f,(storey-2.4f)*.5f,.72f),PLASTER,plaster);h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+2.43f,z),make_float3(.16f,.045f,.80f),WOOD,make_float3(.30f,.20f,.12f));h=virtualBox(q,start,direction,h,make_float3(side*2.39f,y+1.17f,z+.79f),make_float3(.65f,1.17f,.04f),WOOD,make_float3(.47f,.30f,.17f));h=virtualBox(q,start,direction,h,make_float3(-side*8.8f,y+storey*.5f,z),make_float3(.05f,storey*.5f,.72f),PLASTER,plaster*.65f);
+ if(!openWing(q,side)){
+  for(int end=0;end<2;++end){float a=end?door+.72f:nearZ,b=end?farZ:door-.72f;h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+storey*.5f,(a+b)*.5f),make_float3(.11f,storey*.5f,(b-a)*.5f),PLASTER,plaster);h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+1.2f,door+(end?.76f:-.76f)),make_float3(.16f,1.2f,.045f),WOOD,make_float3(.30f,.20f,.12f));}
+  h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+(2.4f+storey)*.5f,door),make_float3(.11f,(storey-2.4f)*.5f,.72f),PLASTER,plaster);h=virtualBox(q,start,direction,h,make_float3(side*1.7f,y+2.43f,door),make_float3(.16f,.045f,.80f),WOOD,make_float3(.30f,.20f,.12f));h=virtualBox(q,start,direction,h,make_float3(side*2.39f,y+1.17f,door+.79f),make_float3(.65f,1.17f,.04f),WOOD,make_float3(.47f,.30f,.17f));h=virtualBox(q,start,direction,h,make_float3(-side*8.8f,y+storey*.5f,door),make_float3(.05f,storey*.5f,.72f),PLASTER,plaster*.65f);
+ }
   for(int end=0;end<2;++end)h=virtualBox(q,start,direction,h,make_float3(cx,y+storey*.5f,end?farZ:nearZ),make_float3(hw,storey*.5f,.01f),PLASTER,plaster);
   if(type==0||type==4||type==5||type==10)h=virtualBox(q,start,direction,h,make_float3(x,y+.025f,z),make_float3(1.55f,.009f,1.55f),FABRIC,accent*.70f);
   // Major furniture matches the positions, type and palette in room(). Small
   // fittings are deferred until residency; these intersections allocate nothing.
-  if(!angleCulling||virtualBounds(q,start,direction,h.t,make_float3(side*5.95f,y+1.11f,z+.05f),make_float3(2.55f,1.12f,2.25f))){
+  if(!angleCulling||virtualBounds(q,start,direction,h.t,make_float3(side*5.95f,y+1.11f,z+.05f),make_float3(2.65f,1.12f,2.25f))){
   h=virtualSpecialRoom(q,start,direction,h,type,side,y,z,key,accent);
   if(type==0||type==7){h=virtualBox(q,start,direction,h,make_float3(side*7.1f,y+.30f,z-.15f),make_float3(.62f,.23f,1.22f),UPHOLSTERY,accent);h=virtualBox(q,start,direction,h,make_float3(side*7.55f,y+.76f,z-.15f),make_float3(.18f,.5f,1.22f),UPHOLSTERY,accent*.8f);h=virtualBox(q,start,direction,h,make_float3(side*4.85f,y+.36f,z),make_float3(.58f,.055f,.9f),WOOD,make_float3(.39f,.23f,.12f));}
   if(type==1){h=virtualBox(q,start,direction,h,make_float3(side*7.85f,y+.44f,z-.15f),make_float3(.65f,.44f,1.78f),WOOD,make_float3(.34f,.27f,.18f));h=virtualBox(q,start,direction,h,make_float3(side*7.8f,y+.92f,z-.15f),make_float3(.76f,.05f,1.88f),TILE,make_float3(.84f,.81f,.71f));h=virtualBox(q,start,direction,h,make_float3(side*4.4f,y+.76f,z),make_float3(.8f,.045f,.5f),WOOD,make_float3(.55f,.32f,.15f));}
@@ -527,32 +556,32 @@ __device__ float3 virtualInterior(float* s,float3 ro,float3 rd,Hit entry,float p
   }
   h=virtualBox(q,start,direction,h,make_float3(x,y+storey-.18f,z),make_float3(.68f,.035f,.035f),LIGHT,make_float3(1,.81f,.51f));
  }else{
-  for(int sideWall=-1;sideWall<=1;sideWall+=2){if(angleCulling&&!virtualBounds(q,start,direction,h.t,make_float3(sideWall*2.4f,y+storey*.5f,-1.3f),make_float3(1.0f,storey*.5f,6.75f)))continue;float last=-8;for(int r=0;r<2;++r){float door=roomZ(q,floor,sideWall,r);h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+storey*.5f,(last+door-.72f)*.5f),make_float3(.11f,storey*.5f,(door-.72f-last)*.5f),PLASTER,plaster);h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+(2.4f+storey)*.5f,door),make_float3(.11f,(storey-2.4f)*.5f,.72f),PLASTER,plaster);h=virtualBox(q,start,direction,h,make_float3(sideWall*2.39f,y+1.17f,door+.79f),make_float3(.65f,1.17f,.04f),WOOD,make_float3(.47f,.30f,.17f));h=virtualBox(q,start,direction,h,make_float3(sideWall*3.2f,y+1.2f,door),make_float3(.02f,1.2f,.72f),PLASTER,plaster*.6f);for(int edge=-1;edge<=1;edge+=2)h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+1.2f,door+edge*.76f),make_float3(.16f,1.2f,.045f),WOOD,make_float3(.30f,.20f,.12f));h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+2.43f,door),make_float3(.16f,.045f,.80f),WOOD,make_float3(.30f,.20f,.12f));last=door+.72f;}h=virtualBox(q,start,direction,h,make_float3(sideWall*1.53f,y+storey-.23f,-1.3f),make_float3(.09f,.065f,6.6f),PLASTER,make_float3(.89f,.86f,.76f));h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+storey*.5f,(last+5.4f)*.5f),make_float3(.11f,storey*.5f,(5.4f-last)*.5f),PLASTER,plaster);}
-  h=virtualBox(q,start,direction,h,make_float3(0,y+storey*.5f,11.0f),make_float3(1.8f,storey*.5f,.10f),PLASTER,plaster);
+  for(int sideWall=-1;sideWall<=1;sideWall+=2){if(openWing(q,sideWall))continue;if(angleCulling&&!virtualBounds(q,start,direction,h.t,make_float3(sideWall*2.4f,y+storey*.5f,-1.3f),make_float3(1.0f,storey*.5f,6.75f)))continue;float last=-8;for(int r=0;r<sideRooms(q,sideWall);++r){float door=roomZ(q,floor,sideWall,r);h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+storey*.5f,(last+door-.72f)*.5f),make_float3(.11f,storey*.5f,(door-.72f-last)*.5f),PLASTER,plaster);h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+(2.4f+storey)*.5f,door),make_float3(.11f,(storey-2.4f)*.5f,.72f),PLASTER,plaster);h=virtualBox(q,start,direction,h,make_float3(sideWall*2.39f,y+1.17f,door+.79f),make_float3(.65f,1.17f,.04f),WOOD,make_float3(.47f,.30f,.17f));h=virtualBox(q,start,direction,h,make_float3(sideWall*3.2f,y+1.2f,door),make_float3(.02f,1.2f,.72f),PLASTER,plaster*.6f);for(int edge=-1;edge<=1;edge+=2)h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+1.2f,door+edge*.76f),make_float3(.16f,1.2f,.045f),WOOD,make_float3(.30f,.20f,.12f));h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+2.43f,door),make_float3(.16f,.045f,.80f),WOOD,make_float3(.30f,.20f,.12f));last=door+.72f;}h=virtualBox(q,start,direction,h,make_float3(sideWall*1.53f,y+storey-.23f,-1.3f),make_float3(.09f,.065f,6.6f),PLASTER,make_float3(.89f,.86f,.76f));h=virtualBox(q,start,direction,h,make_float3(sideWall*1.7f,y+storey*.5f,(last+roomEnd(q))*.5f),make_float3(.11f,storey*.5f,(roomEnd(q)-last)*.5f),PLASTER,plaster);}
+  if(planFamily(buildingKey(q))!=3)h=virtualBox(q,start,direction,h,make_float3(0,y+storey*.5f,11.0f),make_float3(1.8f,storey*.5f,.10f),PLASTER,plaster);
   if(floor<(int)q[8]-1&&(!angleCulling||virtualBounds(q,start,direction,h.t,make_float3(-.94f,y+storey*.25f,7.0f),make_float3(.73f,storey*.25f+.16f,1.5f))))for(int j=0;j<10;++j){float height=(j+1)*storey/20.0f;h=virtualBox(q,start,direction,h,make_float3(-.94f,y+height-.08f,5.65f+j*.30f),make_float3(.73f,.08f,.15f),WOOD,make_float3(.43f,.28f,.16f));}
   for(int j=0;j<4;++j)h=virtualBox(q,start,direction,h,make_float3(0,y+storey-.24f,-6+j*3.5f),make_float3(.45f,.028f,.05f),LIGHT,make_float3(1,.83f,.57f));
  }
- float3 color=plaster*.25f;if(h.id>=0){float3 p=start+direction*h.t;Shape o=h.feature;float3 lamp=make_float3((corridor?0:x)*sx,y+storey-.3f,(corridor?floorf((p.z/sz+6)/3.5f+.5f)*3.5f-6:z)*sz);float3 delta=lamp-p;float light=.30f+.80f*clamp(dot(h.n,norm(delta)))/(1+dot(delta,delta)*.035f);color=surfaceMaterial(o,p,h.n,(entry.t+h.t)*pixelScale)*make_float3(light*.96f,light*.98f,light);if(o.mat==LIGHT)color=o.color*3;}
+ float3 color=plaster*.25f;if(h.id>=0){float3 p=start+direction*h.t;Shape o=h.feature;float3 lamp=make_float3((corridor?0:x)*sx,y+storey-.3f,(corridor?floorf((p.z/sz+6)/3.5f+.5f)*3.5f-6:z)*sz);lamp=virtualPoint(q,make_float3(lamp.x/sx,lamp.y,lamp.z/sz));lamp.x*=sx;lamp.z*=sz;float3 delta=lamp-p;float light=.30f+.80f*clamp(dot(h.n,norm(delta)))/(1+dot(delta,delta)*.035f);color=surfaceMaterial(o,p,h.n,(entry.t+h.t)*pixelScale)*make_float3(light*.96f,light*.98f,light);if(o.mat==LIGHT)color=o.color*3;}
  if(opening.mat==VIRTUAL_WINDOW){float fresnel=.035f+.65f*powf(1-fabsf(dot(rd,entry.n)),5);color=lerp(color*make_float3(.94f,.98f,.98f),sky(rd-entry.n*(2*dot(rd,entry.n))),fresnel);}return color;
 }
 __device__ float3 shade(float* s,const float* nodes,float3 ro,float3 rd,Hit h,unsigned int rng,float pixelScale,bool detailed,float filteredSun=-1){
     if(h.id<0)return sky(rd);Shape o=hitShape(s,h);float3 p=ro+rd*h.t,n=h.n,c=material(s,o,p,n,h.t*pixelScale);
     if(o.mat==VIRTUAL_WINDOW||o.mat==VIRTUAL_DOOR)return make_float3(.3f,.3f,.3f);
     if(o.mat==LIGHT)return o.color*3;
-    float3 localP=rotateY(p,-s[18]);float sx=s[5],sz=s[6];int floor=0;for(int f=1;f<(int)s[8];++f)if(p.y+.05f>=floorBase(s,f))floor=f;float base=floorBase(s,floor),ceiling=floorBase(s,floor+1);
+    float3 localP=rotateY(p,-s[18]);float sx=s[5],sz=s[6];localP.x=unplanX(buildingKey(s),localP.x/sx)*sx;localP.z=planZ(buildingKey(s),localP.z/sz)*sz;int floor=0;for(int f=1;f<(int)s[8];++f)if(p.y+.05f>=floorBase(s,f))floor=f;float base=floorBase(s,floor),ceiling=floorBase(s,floor+1);
     bool indoors=fabsf(localP.x)<9.15f*sx&&localP.z>-8.25f*sz&&localP.z<11.2f*sz&&p.y<floorBase(s,(int)s[8])-.1f;
     float ambient=indoors?.20f:.40f;float3 illumination=make_float3(ambient*.9f,ambient*.95f,ambient);
     float3 sun=norm(make_float3(-.7f,1,-.5f));float nd=clamp(dot(n,sun));
     if(nd>0){if(filteredSun>=0)illumination=illumination+make_float3(2.4f,2.05f,1.55f)*(nd*filteredSun);else{float3 jitter=make_float3(randf(rng)-.5f,randf(rng+1)-.5f,randf(rng+2)-.5f)*.025f;float3 l=norm(sun+jitter);bool visible=false;if(h.id==CAP)visible=h.visibility>.5f;else{Hit sh=trace(s,nodes,p+n*.003f,l,80,true);visible=sh.id<0;}if(visible)illumination=illumination+make_float3(2.4f,2.05f,1.55f)*nd;}}
     if(indoors){
-        int side=localP.x<0?-1:1,back=localP.z/sz<roomSplit(s,floor,side)?0:1;float rz=roomZ(s,floor,side,back)*sz;
+        int side=localP.x<0?-1:1,back=localP.z/sz<(sideRooms(s,side)==1?-1.3f:roomSplit(s,floor,side))?0:1;float rz=furnitureZ(s,floor,side,back)*sz;
         float3 lamp;if(fabsf(localP.x)<1.85f*sx)lamp=make_float3(0,ceiling-.35f,(floorf((localP.z/sz+6)/3.5f+.5f)*3.5f-6)*sz);else lamp=make_float3(side*5.2f*sx,ceiling-.3f,rz);
         if(localP.z>5.4f*sz)lamp=make_float3(0,ceiling-.2f,8.8f*sz);
-        lamp=rotateY(lamp,s[18]);
+        lamp=planPoint(buildingKey(s),make_float3(lamp.x/sx,lamp.y,lamp.z/sz));lamp.x*=sx;lamp.z*=sz;lamp=rotateY(lamp,s[18]);
         float3 delta=lamp-p;float dist=sqrtf(dot(delta,delta));float3 l=delta/fmaxf(.01f,dist);float cosine=clamp(dot(n,l));
         if(cosine>0){Hit sh=trace(s,nodes,p+n*.005f,l,dist-.08f,true);if(sh.id<0)illumination=illumination+make_float3(1.0f,.81f,.59f)*(cosine*5.5f/(1+dist*dist*.55f));}
         // Broad diffuse fill from the nearest real window.
-        float3 window=make_float3(side*8.9f*sx,base+1.85f,rz);window=rotateY(window,s[18]);float3 wl=norm(window-p);
+        float3 window=make_float3(side*8.9f*sx,base+1.85f,rz);window=planPoint(buildingKey(s),make_float3(window.x/sx,window.y,window.z/sz));window.x*=sx;window.z*=sz;window=rotateY(window,s[18]);float3 wl=norm(window-p);
         float facing=clamp(dot(n,wl));illumination=illumination+make_float3(.43f,.51f,.59f)*(facing/(1+fabsf(window.x-p.x)*.12f));
     }
     if(detailed){float3 random=norm(make_float3(randf(rng+3)*2-1,randf(rng+4)*2-1,randf(rng+5)*2-1));float3 ao=norm(n+random);if(dot(ao,n)<.01f)ao=n;
@@ -637,12 +666,12 @@ __global__ void simulate(float* s,float* C,const float* I,int steps){if(threadId
 __global__ void accumulate(float* C){if(threadIdx.x||blockIdx.x)return;C[9]=fminf(64.0f,C[9]+1.0f);}
 
 
-__global__ void initCamera(float* s,float* C,int view){if(threadIdx.x||blockIdx.x)return;for(int i=0;i<16;++i)C[i]=0.0f;C[2]=-15.0f;
+__global__ void initCamera(float* s,float* C,int view){if(threadIdx.x||blockIdx.x)return;for(int i=0;i<16;++i)C[i]=0.0f;C[2]=-15.0f;C[0]=entranceX(buildingKey(s));
 if(view==1){C[0]=15;C[1]=3;C[2]=-22;C[3]=-.65f;C[4]=.04f;}
-if(view==2){C[0]=.2f;C[2]=-7;C[3]=.08f;C[4]=.02f;}
-if(view==3){C[0]=-2.6f;C[2]=-6.5f;C[3]=-.87f;C[4]=-.06f;}
+if(view==2){C[0]=planFamily(buildingKey(s))==3?6.0f:.2f;C[2]=planFamily(buildingKey(s))==3?10.0f:-7;C[3]=planFamily(buildingKey(s))==3?PI+.75f:.08f;C[4]=.02f;}
+if(view==3){C[0]=-3.2f;C[2]=furnitureZ(s,0,-1,0);C[3]=-.87f;C[4]=-.06f;}
 if(view==4){C[0]=-.3f;C[2]=3.8f;C[3]=.03f;C[4]=.18f;}
-if(view==5){C[2]=4.7f;C[1]=floorBase(s,(int)s[8]-1);C[3]=PI;C[4]=-.03f;}float3 pos=rotateY(make_float3(C[0]*s[5],C[1],C[2]*s[6]),s[18]);C[0]=pos.x;C[2]=pos.z;C[3]+=s[18];}
+if(view==5){C[2]=4.7f;C[1]=floorBase(s,(int)s[8]-1);C[3]=PI;C[4]=-.03f;}if(view>=2){float3 mapped=planPoint(buildingKey(s),make_float3(C[0],C[1],C[2]));C[0]=mapped.x;C[2]=mapped.z;if(planFamily(buildingKey(s))==3)C[3]=PI-C[3];}float3 pos=rotateY(make_float3(C[0]*s[5],C[1],C[2]*s[6]),s[18]);C[0]=pos.x;C[2]=pos.z;C[3]+=s[18];}
 
 __global__ void probeOutdoor(float* s,const float* I,float* Plan){if(threadIdx.x||blockIdx.x)return;float3 c=outdoorMaterial(s,make_float3(I[0],0,I[1]),0);Plan[60]=c.x;Plan[61]=c.y;Plan[62]=c.z;}
 
