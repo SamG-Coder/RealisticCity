@@ -14,7 +14,7 @@ export class BuildingEngine{
  bind(name,scalars={}){return this.kernels[name].bind(Object.fromEntries(this.kernels[name].artifact.metadata.bindings.map(b=>[b.name,this.buffers[b.name]])),scalars);}
  async build(seed,lotX=this.lotX,lotZ=this.lotZ,resident=true){if(![lotX,lotZ].every(v=>Number.isInteger(v)&&Math.abs(v)<=1000000))throw Error("Lot coordinates must be integers between -1000000 and 1000000.");if(!Number.isInteger(seed)||seed<0||seed>16777215)throw Error('Seed must be an integer from 0 to 16777215.');await this.runtime.idle();this.seed=seed;this.lotX=lotX;this.lotZ=lotZ;this.resident=resident;this.rebuilds++;
   this.runtime.batch().dispatch(this.bind('generateScene',{seed,lotX,lotZ,resident:resident?1:0,radius:this.radius}),[1]).dispatch(this.bind('describeLayout'),[1]).submit();
-  const state=await this.runtime.read(this.buffers.s,Float32Array,128,0);this.shapes=state[0];this.collisionShapes=state[1];if(state[2])throw Error('Building geometry capacity exceeded');
+  const state=await this.runtime.read(this.buffers.s,Float32Array,128,0);this.hasBuilding=state[8]>0;this.resident=resident&&this.hasBuilding;this.shapes=state[0];this.collisionShapes=state[1];if(state[2])throw Error('Building geometry capacity exceeded');
   const capacity=2**Math.ceil(Math.log2(this.shapes));this.runtime.write(this.buffers.s,new Float32Array([capacity]),23*4);
   const batch=this.runtime.batch();batch.dispatch(this.bind('morton'),[capacity/64]);for(let stage=2;stage<=capacity;stage*=2)for(let stride=stage/2;stride;stride>>=1)batch.dispatch(this.bind('sortPairs',{stage,stride}),[capacity/64]);batch.dispatch(this.bind('leaves'),[capacity/64]);for(let start=capacity/2;start;start>>=1)batch.dispatch(this.bind('parents',{start}),[Math.ceil(start/64)]);batch.submit();await this.runtime.idle();
   this.layout=Array.from(await this.runtime.read(this.buffers.Plan));this.sample=0;
@@ -25,7 +25,7 @@ export class BuildingEngine{
   const px=c[0]-dx*40,pz=c[2]-dz*40;
   // Conservative envelope for every footprint; hysteresis avoids churn at the boundary.
   const distance=Math.hypot(Math.max(0,Math.abs(px)-10.5),Math.max(0,Math.abs(pz-1.5)-11));
-  const resident=c[1]<20&&distance<(this.resident&&!dx&&!dz?11:8);
+  const resident=(dx!==0||dz!==0||this.hasBuilding)&&c[1]<20&&distance<(this.resident&&!dx&&!dz?11:8);
   if(!dx&&!dz&&resident===this.resident)return false;
   await this.build(this.seed,x,z,resident);c[0]=px;c[2]=pz;this.setCamera(c);return true;
  }

@@ -52,18 +52,42 @@ __device__ Hit intersectShape(Shape o,float3 ro,float3 rd,float limit,bool shado
  h.n=rotateY(h.n,o.angle);h.t=t;h.id=0;h.feature=o;return h;
 }
 // Fixed domain tags keep independent random groups from rerolling each other.
-__device__ unsigned int neighbourhoodKey(unsigned int seed,int x,int z){int rx=(int)floorf((float)x/8),rz=(int)floorf((float)z/8),nx=(int)floorf((float)x/4),nz=(int)floorf((float)z/4);unsigned int region=regionKey(seed^0x52454749u,rx,rz);return regionKey(region^0x4E454947u,nx,nz);}
-struct Street {float3 a;float3 b;float3 control;float3 end;float width;int active;int kind;};
+// Economic values are procedural design indices, not real currency prices.
+__device__ int highwayOffset(unsigned int seed){return (int)(mix(seed^0x48575953u)%64u);}
+__device__ unsigned int highwayGroup(unsigned int seed,int x,int z){return regionKey(seed^0x48574752u,(int)floorf((float)(x-highwayOffset(seed))/64),(int)floorf((float)z/64));}
+__device__ unsigned int districtKey(unsigned int seed,int x,int z){return regionKey(highwayGroup(seed,x,z)^0x45434F4Eu,(int)floorf((float)(x-highwayOffset(seed))/32),(int)floorf((float)z/32));}
+__device__ float districtValue(unsigned int seed,int x,int z){return .1f+.8f*randf(districtKey(seed,x,z));}
+// Smooth value field: adjacent addresses sample the same seeded anchors.
+__device__ float economicAnchor(unsigned int seed,int x,int z){return clamp(districtValue(seed,x*8+highwayOffset(seed),z*8)+(randf(regionKey(seed^0x56414C55u,x,z))-.5f)*.12f);}
+__device__ float highwayDistance(unsigned int seed,int x){float phase=fract(((float)(x-highwayOffset(seed))+.5f)/64.0f)*64.0f;return fminf(phase,64.0f-phase)*40.0f;}
+__device__ float neighbourhoodValue(unsigned int seed,int x,int z){float gx=(float)(x-highwayOffset(seed))/8.0f,gz=(float)z/8.0f;int ix=(int)floorf(gx),iz=(int)floorf(gz);float u=fract(gx),v=fract(gz);u=u*u*(3-2*u);v=v*v*(3-2*v);float a=economicAnchor(seed,ix,iz)*(1-u)+economicAnchor(seed,ix+1,iz)*u,b=economicAnchor(seed,ix,iz+1)*(1-u)+economicAnchor(seed,ix+1,iz+1)*u;return clamp(a*(1-v)+b*v-.12f*clamp(1-highwayDistance(seed,x)/200.0f));}
+__device__ float propertyValue(unsigned int seed,int x,int z){return clamp(neighbourhoodValue(seed,x,z)+(randf(regionKey(seed^0x50524943u,x,z))-.5f)*.03f);}
+__device__ unsigned int neighbourhoodKey(unsigned int seed,int x,int z){int nx=(int)floorf((float)(x-highwayOffset(seed))/8),nz=(int)floorf((float)z/8);unsigned int region=districtKey(seed,x,z);return regionKey(region^0x4E454947u,nx,nz);}
+struct Street {float3 a;float3 b;float3 control;float3 end;float width;int active;int kind;int terminal;};
 __device__ float3 roadNode(unsigned int seed,int x,int z){unsigned int k=regionKey(neighbourhoodKey(seed,x,z)^87139u,x,z);return make_float3((x-.5f)*40.0f+(randf(k)-.5f)*7.0f,0,(z-.5f)*40.0f+(randf(k^781u)-.5f)*7.0f);}
-// 0 connector, 1 local street, 2 lane, 3 court, 4 crescent, 5 loop.
-__device__ Street street(unsigned int seed,int x,int z,int axis){Street r;r.a=roadNode(seed,x,z);r.b=roadNode(seed,x+(axis==0?1:0),z+(axis==1?1:0));r.end=r.b;unsigned int group=neighbourhoodKey(seed,x,z),k=regionKey(group^0x524F4144u,x,z)^mix((unsigned int)axis+1u);
- bool backbone=axis==0||x%4==0;r.active=backbone||randf(k^992u)>.2f?1:0;r.kind=backbone?(x%4==0?0:1):(randf(k^0x54595045u)<.75f?2+(int)(mix(group^0x54595045u)%4u):2+(int)(mix(k^0x56415249u)%4u));r.width=r.kind==0?3.6f:(r.kind==2?1.55f:(r.kind==3?2.25f:(r.kind==5?1.65f:2.65f)));
- r.width+=randf(k)*.25f;if(r.kind==3)r.b=r.a+(r.b-r.a)*(.62f+randf(k^71u)*.08f);
- float3 d=norm(r.b-r.a),normal=make_float3(d.z,0,-d.x);r.control=(r.a+r.b)*.5f+normal*(r.kind==5?12.0f:(r.kind==4?8.0f:0.0f));return r;}
+// 0 connector, 1 local street, 2 lane, 3 court, 4 crescent, 5 loop, 6 highway.
+// A road group owns an entire access street, not one 40m address edge.
+// Courts branch off a local street, run through several plots, and end once.
+__device__ Street street(unsigned int seed,int x,int z,int axis){Street r;r.a=roadNode(seed,x,z);r.b=roadNode(seed,x+(axis==0?1:0),z+(axis==1?1:0));r.end=r.b;r.terminal=0;
+ int lx=x-highwayOffset(seed),mx=lx-(int)floorf((float)lx/8)*8,mz=z-(int)floorf((float)z/4)*4;
+ int groupX=(int)floorf((float)lx/4),groupZ=(int)floorf((float)z/4);unsigned int group=neighbourhoodKey(seed,x,z),k=regionKey(group^0x524F4144u,groupX,groupZ);
+ bool major=axis==1&&lx%64==0,collector=(axis==1&&mx==0)||(axis==0&&z%16==0),local=axis==0&&mz==0;
+ int preferred=2+(int)(mix(group^0x54595045u)%4u);int family=preferred;
+ r.kind=major?6:(collector?0:(local?1:family));r.active=major||collector||local?1:0;
+ if(axis==1&&mx%4==2){r.active=1;if(family==3){bool reverse=randf(k^0x454E5452u)>.5f;r.active=reverse?(mz>0?1:0):(mz<3?1:0);r.terminal=reverse?(mz==1?1:0):(mz==2?1:0);if(reverse){float3 a=r.a;r.a=r.b;r.b=a;r.end=r.b;}}}
+ // Local roads do not each get a highway entrance. District connectors own access.
+ int highwayPhase=lx-(int)floorf((float)lx/64)*64;
+ int corridor=highwayPhase==63?x+1:x;int entry=(int)(mix(seed^(unsigned int)corridor^0x454E5459u)%2u)*16;int entryPhase=z-(int)floorf((float)z/32)*32;
+ if(axis==0&&(highwayPhase==0||highwayPhase==63)&&entryPhase!=entry)r.active=0;
+ r.width=r.kind==6?5.0f:(r.kind==0?3.6f:(r.kind==2?1.55f:(r.kind==3?2.25f:(r.kind==5?1.65f:2.65f))));
+ unsigned int sizeGroup=regionKey(seed^0x53495A45u,r.kind==6?x:groupX,r.kind==6?0:groupZ);r.width+=randf(sizeGroup)*.4f;
+ if(r.terminal){bool reverse=randf(k^0x454E5452u)>.5f;r.b=r.a+(r.b-r.a)*(.7f+randf(k^71u)*.15f);r.end=roadNode(seed,x,z-mz+(reverse?0:4));}
+ float3 d=norm(r.b-r.a),normal=make_float3(d.z,0,-d.x);r.control=(r.a+r.b)*.5f+normal*(r.kind==4?4.0f:0.0f);return r;}
 __device__ float3 streetPoint(Street r,float t){return r.a*((1-t)*(1-t))+r.control*(2*t*(1-t))+r.b*(t*t);}
 __device__ float3 closestSegment(float3 a,float3 b,float3 p){float3 d=b-a;return a+d*clamp(dot(p-a,d)/fmaxf(.0001f,dot(d,d)));}
-__device__ float3 closestStreet(Street r,float3 p){float best=1e20f;float3 closest=r.a;for(int j=0;j<6;++j){float3 q=closestSegment(streetPoint(r,j/6.0f),streetPoint(r,(j+1)/6.0f),p);float dd=dot(q-p,q-p);if(dd<best){best=dd;closest=q;}}if(r.kind==5){float3 q=closestSegment(r.a,r.b,p);if(dot(q-p,q-p)<best)closest=q;}return closest;}
-__device__ Street frontage(unsigned int seed,int x,int z){Street best=street(seed,x,z,0);float score=1e9f;for(int side=0;side<4;++side){Street r=street(seed,x+(side==3?1:0),z+(side==1?1:0),side<2?0:1);if(!r.active)continue;float rank=randf(regionKey(neighbourhoodKey(seed,x,z)^0x504C4F54u,x,z)^(unsigned int)side*179u);if(rank<score){score=rank;best=r;}}return best;}
+__device__ float3 closestStreet(Street r,float3 p){float best=1e20f;float3 closest=r.a;for(int j=0;j<6;++j){float3 q=closestSegment(streetPoint(r,j/6.0f),streetPoint(r,(j+1)/6.0f),p);float dd=dot(q-p,q-p);if(dd<best){best=dd;closest=q;}}return closest;}
+__device__ Street frontage(unsigned int seed,int x,int z){Street best=street(seed,x,z,0);float score=1e9f;float3 center=make_float3(x*40.0f,0,z*40.0f);for(int dz=-1;dz<=2;++dz)for(int dx=-1;dx<=2;++dx)for(int axis=0;axis<2;++axis){Street r=street(seed,x+dx,z+dz,axis);if(!r.active||r.kind==6)continue;float3 q=closestStreet(r,center);float rank=dot(q-center,q-center);if(rank<score){score=rank;best=r;}}return best;}
+__device__ bool buildablePlot(unsigned int seed,int x,int z){Street r=frontage(seed,x,z);float3 center=make_float3(x*40.0f,0,z*40.0f),d=closestStreet(r,center)-center;return r.active&&r.kind!=6&&dot(d,d)<35.0f*35.0f;}
 __device__ float buildingAngle(unsigned int seed,int x,int z){Street r=frontage(seed,x,z);float3 center=make_float3(x*40.0f,0,z*40.0f),normal=norm(closestStreet(r,center)-center);return atan2f(-normal.x,-normal.z);}
 __device__ float3 regionColor(unsigned int seed,int x,int z){float v=randf(regionKey(seed,x,z));return lerp(make_float3(.19f,.26f,.105f),make_float3(.38f,.36f,.20f),v);}
 __device__ float3 outdoorMaterial(float* s,float3 p,float footprint){
@@ -72,12 +96,16 @@ __device__ float3 outdoorMaterial(float* s,float3 p,float footprint){
     float gx=wx/320.0f,gz=wz/320.0f;int ix=(int)floorf(gx),iz=(int)floorf(gz);float u=fract(gx),v=fract(gz);u=u*u*(3-2*u);v=v*v*(3-2*v);
     float3 color=lerp(lerp(regionColor(seed,ix,iz),regionColor(seed,ix+1,iz),u),lerp(regionColor(seed,ix,iz+1),regionColor(seed,ix+1,iz+1),u),v);
     float noise=randf((unsigned int)(int)floorf(wx*70)*73856093u^(unsigned int)(int)floorf(wz*70)*19349663u^seed),micro=clamp(1-footprint*35);
-    float best=1e9f,dist=0,along=0,length=0,width=0;int kind=0;bool pedestrian=false;
-    for(int dz=-1;dz<=1;++dz)for(int dx=-1;dx<=1;++dx)for(int axis=0;axis<2;++axis){Street r=street(seed,cx+dx,cz+dz,axis);if(!r.active)continue;float3 d=r.b-r.a;float len=sqrtf(dot(d,d)),t=clamp(dot(point-r.a,d)/(len*len));float3 q=closestStreet(r,point);float dd=sqrtf(dot(point-q,point-q)),w=r.width;if(r.kind==3&&dot(point-r.b,point-r.b)<30.25f){dd=sqrtf(dot(point-r.b,point-r.b));w=5.5f;}if(dd-w<best){best=dd-w;dist=dd;along=t*len;length=len;width=w;kind=r.kind;}if(r.kind==3){float3 pathPoint=closestSegment(r.b,r.end,point);if(dot(point-pathPoint,point-pathPoint)<.8f*.8f)pedestrian=true;}}
-    bool path=false;Street front=frontage(seed,cx,cz);float3 center=make_float3(cx*40.0f,0,cz*40.0f),delta=closestStreet(front,center)-center;float len=sqrtf(dot(delta,delta));float longitudinal=dot(point-center,delta)/len,lateral=fabsf((point.x-center.x)*delta.z-(point.z-center.z)*delta.x)/len;path=longitudinal>7&&longitudinal<len&&lateral<1.35f;
-    if(best<0){color=make_float3(.105f,.12f,.125f);bool junction=along<5||along>length-5;
-        if(kind<2&&!junction&&((dist<.07f&&fract(along/5)<.5f)||fabsf(dist-(width-.23f))<.045f))color=make_float3(.81f,.79f,.65f);
-        if(kind<2&&(fabsf(along-6)<.65f||fabsf(along-(length-6))<.65f)&&fract(dist/.8f)<.5f)color=make_float3(.82f,.82f,.74f);
+    float best=1e9f,dist=0,along=0,length=0,width=0;int kind=0,edgeX=0,edgeZ=0,edgeAxis=0;bool pedestrian=false;
+    for(int dz=-1;dz<=1;++dz)for(int dx=-1;dx<=1;++dx)for(int axis=0;axis<2;++axis){Street r=street(seed,cx+dx,cz+dz,axis);if(!r.active)continue;float3 d=r.b-r.a;float len=sqrtf(dot(d,d)),t=clamp(dot(point-r.a,d)/(len*len));float3 q=closestStreet(r,point);float dd=sqrtf(dot(point-q,point-q)),w=r.width;if(r.terminal&&dot(point-r.b,point-r.b)<64.0f){dd=sqrtf(dot(point-r.b,point-r.b));w=8.0f;}if(dd-w<best){best=dd-w;dist=dd;along=t*len;length=len;width=w;kind=r.kind;edgeX=cx+dx;edgeZ=cz+dz;edgeAxis=axis;}if(r.terminal){float3 pathPoint=closestSegment(r.b,r.end,point);if(dot(point-pathPoint,point-pathPoint)<.8f*.8f)pedestrian=true;}}
+    bool path=false;Street front=frontage(seed,cx,cz);float3 center=make_float3(cx*40.0f,0,cz*40.0f),delta=closestStreet(front,center)-center;float len=sqrtf(dot(delta,delta));float longitudinal=dot(point-center,delta)/len,lateral=fabsf((point.x-center.x)*delta.z-(point.z-center.z)*delta.x)/len;path=len<35&&longitudinal>7&&longitudinal<len&&lateral<1.35f;
+    if(best<0){color=make_float3(.105f,.12f,.125f);
+        Street pa=street(seed,edgeX,edgeZ,1-edgeAxis),pb=street(seed,edgeX-(edgeAxis==1?1:0),edgeZ-(edgeAxis==0?1:0),1-edgeAxis);
+        int bx=edgeX+(edgeAxis==0?1:0),bz=edgeZ+(edgeAxis==1?1:0);Street qa=street(seed,bx,bz,1-edgeAxis),qb=street(seed,bx-(edgeAxis==1?1:0),bz-(edgeAxis==0?1:0),1-edgeAxis);
+        bool atStart=pa.active||pb.active,atEnd=qa.active||qb.active,junction=(atStart&&along<5)||(atEnd&&along>length-5);
+        if((kind<2||kind==6)&&!junction&&((dist<.07f&&fract(along/5)<.5f)||fabsf(dist-(width-.23f))<.045f))color=make_float3(.81f,.79f,.65f);
+        if(kind==6){if(dist<.12f)color=make_float3(.85f,.69f,.29f);else if(fabsf(dist-width*.5f)<.045f&&fract(along/7)<.55f)color=make_float3(.82f,.82f,.74f);}
+        if(kind<2&&((atStart&&fabsf(along-6)<.65f)||(atEnd&&fabsf(along-(length-6))<.65f))&&fract(dist/.8f)<.5f)color=make_float3(.82f,.82f,.74f);
     }else if(best<2||path||pedestrian){color=make_float3(.57f,.56f,.50f);float seam=fminf(fminf(fract(wx/.8f),1-fract(wx/.8f)),fminf(fract(wz/.8f),1-fract(wz/.8f)));if(seam<.016f&&footprint<.04f)color=color*.73f;}
     return color*(1+(noise-.5f)*.15f*micro);
 }
@@ -176,10 +204,12 @@ __device__ void sideWindow(float* s,float x,float y,float z){
 __device__ void emitBuilding(float* s,unsigned int seed,int lotX,int lotZ,int resident,float offsetX,float offsetZ){
     s[16]=offsetX;s[17]=offsetZ;s[18]=buildingAngle(seed,lotX,lotZ);s[26]=0;unsigned int key=regionKey(neighbourhoodKey(seed,lotX,lotZ)^0x484F5553u,lotX,lotZ);
     s[15]=(float)resident;s[3]=(float)(key&65535u);s[4]=(float)(key>>16);
-    s[5]=.90f+.23f*randf(key^101u);s[6]=.93f+.20f*randf(key^102u);s[7]=(float)(mix(key^103u)%3u);s[8]=(float)(2u+mix(key^104u)%3u);s[9]=(float)(mix(key^105u)%3u);
+    float value=propertyValue(seed,lotX,lotZ);unsigned int style=neighbourhoodKey(seed,lotX,lotZ);
+    s[5]=.90f+.16f*value+.07f*randf(key^101u);s[6]=.93f+.13f*value+.07f*randf(key^102u);s[7]=randf(key^103u)<.8f?0:(float)(1u+mix(key^103u)%2u);s[8]=(float)(value<.35f?3+(int)(mix(key^104u)%2u):(value>.65f?2:2+(int)(mix(key^104u)%2u)));s[9]=(float)(randf(key^105u)<.8f?mix(style^105u)%3u:mix(key^105u)%3u);
+    if(!buildablePlot(seed,lotX,lotZ)){s[8]=0;s[15]=0;for(int f=0;f<=4;++f)s[10+f]=0;return;}
     int floors=(int)s[8];s[10]=0.0f;for(int f=1;f<=4;++f)s[10+f]=s[9+f]+3.08f+.27f*randf(mix(key^(unsigned int)f)^106u);
-    float3 plaster=make_float3(.78f,.75f,.66f),brick=make_float3(.40f,.20f,.115f),floorWood=make_float3(.52f,.32f,.17f),dark=make_float3(.13f,.16f,.15f);
-    int facade=(int)s[7]==1?CONCRETE:BRICK;brick=lerp(make_float3(.29f,.12f,.07f),make_float3(.49f,.35f,.22f),randf(key^107u));if(facade==CONCRETE)brick=make_float3(.56f,.58f,.54f);
+    float3 plaster=lerp(make_float3(.64f,.63f,.57f),make_float3(.87f,.85f,.79f),value),brick=make_float3(.40f,.20f,.115f),floorWood=make_float3(.52f,.32f,.17f),dark=make_float3(.13f,.16f,.15f);
+    int facade=(int)s[7]==1?CONCRETE:(value>.65f?PLASTER:BRICK);brick=lerp(make_float3(.29f,.12f,.07f),make_float3(.49f,.35f,.22f),randf(key^107u));if(facade==CONCRETE)brick=make_float3(.56f,.58f,.54f);if(facade==PLASTER)brick=plaster;else brick=brick*(.85f+.25f*value);
 
 
 
@@ -258,7 +288,7 @@ __device__ void emitBuilding(float* s,unsigned int seed,int lotX,int lotZ,int re
 __device__ void emitOutdoors(float* s,unsigned int seed,int x,int z,float ox,float oz){
  s[5]=1;s[6]=1;s[26]=1;unsigned int key=regionKey(seed,(int)floorf((float)x/8),(int)floorf((float)z/8));s[3]=(float)(key&65535u);s[4]=(float)(key>>16);
  for(int axis=0;axis<2;++axis){Street r=street(seed,x,z,axis);if(!r.active)continue;for(int j=0;j<6;++j){float3 a=streetPoint(r,j/6.0f),b=streetPoint(r,(j+1)/6.0f),delta=b-a;float length=sqrtf(dot(delta,delta));s[16]=(a.x+b.x)*.5f-x*40+ox;s[17]=(a.z+b.z)*.5f-z*40+oz;s[18]=atan2f(delta.x,delta.z);if(j>0&&j<5)for(int side=-1;side<=1;side+=2)box(s,make_float3(side*(r.width+.10f),.04f,0),make_float3(.1f,.04f,length*.5f),CONCRETE,make_float3(.65f,.64f,.57f),false);}
- if(r.kind==3)for(int j=0;j<20;++j){float a=j*2*PI/20.0f;if(dot(make_float3(cosf(a),0,sinf(a)),norm(r.a-r.b))>.8f)continue;s[16]=r.b.x-x*40+ox+cosf(a)*5.6f;s[17]=r.b.z-z*40+oz+sinf(a)*5.6f;s[18]=-a;box(s,make_float3(0,.04f,0),make_float3(.10f,.04f,.90f),CONCRETE,make_float3(.65f,.64f,.57f),false);}
+ if(r.terminal)for(int j=0;j<20;++j){float a=j*2*PI/20.0f;if(dot(make_float3(cosf(a),0,sinf(a)),norm(r.a-r.b))>.8f)continue;s[16]=r.b.x-x*40+ox+cosf(a)*8.1f;s[17]=r.b.z-z*40+oz+sinf(a)*8.1f;s[18]=-a;box(s,make_float3(0,.04f,0),make_float3(.10f,.04f,1.30f),CONCRETE,make_float3(.65f,.64f,.57f),false);}
  }
  s[16]=ox;s[17]=oz;s[18]=0;unsigned int parcel=mix(key^mix((unsigned int)x)^mix((unsigned int)z*739u));if(randf(parcel)>.25f)plant(s,-13,0,-2,1.3f);if(randf(parcel^29u)>.35f)plant(s,13,0,3,1.3f);
 }
@@ -273,7 +303,7 @@ __global__ void generateScene(float* s,unsigned int seed,int lotX,int lotZ,int r
     float overflow=s[2];for(int i=1;i<19;++i)s[i]=header[i];s[2]=overflow;
 }
 
-__global__ void describeLayout(float* s,float* Plan){if(threadIdx.x||blockIdx.x)return;for(int i=0;i<64;++i)Plan[i]=0;Plan[0]=s[5];Plan[1]=s[6];Plan[2]=s[8];Plan[3]=s[9];Plan[4]=s[7];Plan[5]=s[3];Plan[6]=s[4];Plan[7]=s[15];Plan[13]=s[18];for(int f=0;f<=4;++f)Plan[8+f]=floorBase(s,f);for(int f=0;f<(int)s[8];++f)for(int r=0;r<4;++r){int side=r%2?1:-1;Plan[16+f*4+r]=roomZ(s,f,side,r/2)*s[6];Plan[32+f*4+r]=(float)roomType(s,f,side,r/2);}}
+__global__ void describeLayout(float* s,float* Plan){if(threadIdx.x||blockIdx.x)return;for(int i=0;i<64;++i)Plan[i]=0;Plan[0]=s[5];Plan[1]=s[6];Plan[2]=s[8];Plan[3]=s[9];Plan[4]=s[7];Plan[5]=s[3];Plan[6]=s[4];Plan[7]=s[15];Plan[13]=s[18];Plan[14]=districtValue((unsigned int)s[22],(int)s[20],(int)s[21]);Plan[15]=propertyValue((unsigned int)s[22],(int)s[20],(int)s[21]);for(int f=0;f<=4;++f)Plan[8+f]=floorBase(s,f);for(int f=0;f<(int)s[8];++f)for(int r=0;r<4;++r){int side=r%2?1:-1;Plan[16+f*4+r]=roomZ(s,f,side,r/2)*s[6];Plan[32+f*4+r]=(float)roomType(s,f,side,r/2);}}
 
 
 __device__ unsigned int spread(unsigned int x){x&=1023u;x=(x|(x<<16))&0x030000ffu;x=(x|(x<<8))&0x0300f00fu;x=(x|(x<<4))&0x030c30c3u;x=(x|(x<<2))&0x09249249u;return x;}
@@ -430,7 +460,7 @@ __global__ void probeOutdoor(float* s,const float* I,float* Plan){if(threadIdx.x
 
 __global__ void probeRay(float* s,const float* nodes,const float* I,float* Plan){if(threadIdx.x||blockIdx.x)return;Hit h=trace(s,nodes,make_float3(I[0],I[1],I[2]),norm(make_float3(I[3],I[4],I[5])));h=distantQuery(s,make_float3(I[0],I[1],I[2]),norm(make_float3(I[3],I[4],I[5])),h,false);Plan[56]=h.t;Plan[57]=(float)h.id;if(h.id>=0){Shape o=hitShape(s,h);Plan[58]=(float)o.mat;Plan[59]=o.color.x;Plan[60]=o.color.y;Plan[61]=o.color.z;}}
 
-__global__ void probeStreet(float* s,const float* I,float* Plan){if(threadIdx.x||blockIdx.x)return;Street r=street((unsigned int)s[22],(int)I[0],(int)I[1],(int)I[2]);Plan[48]=(float)r.kind;Plan[49]=(float)r.active;Plan[50]=r.a.x;Plan[51]=r.a.z;Plan[52]=r.b.x;Plan[53]=r.b.z;Plan[54]=r.width;Plan[55]=(float)(neighbourhoodKey((unsigned int)s[22],(int)I[0],(int)I[1])&16777215u);}
+__global__ void probeStreet(float* s,const float* I,float* Plan){if(threadIdx.x||blockIdx.x)return;Street r=street((unsigned int)s[22],(int)I[0],(int)I[1],(int)I[2]);Plan[40]=districtValue((unsigned int)s[22],(int)I[0],(int)I[1]);Plan[41]=neighbourhoodValue((unsigned int)s[22],(int)I[0],(int)I[1]);Plan[42]=propertyValue((unsigned int)s[22],(int)I[0],(int)I[1]);Plan[45]=(float)r.terminal;Plan[44]=highwayDistance((unsigned int)s[22],(int)I[0]);Plan[43]=(float)highwayOffset((unsigned int)s[22]);Plan[48]=(float)r.kind;Plan[49]=(float)r.active;Plan[50]=r.a.x;Plan[51]=r.a.z;Plan[52]=r.b.x;Plan[53]=r.b.z;Plan[54]=r.width;Plan[55]=(float)(neighbourhoodKey((unsigned int)s[22],(int)I[0],(int)I[1])&16777215u);}
 
 // Keep procedural traversal in its own compute pass to bound driver compilation work.
 __global__ void farVisibility(float* s,const float* nodes,const float* C,float* Far,float* Glass,int w,int h){
