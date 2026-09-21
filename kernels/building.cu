@@ -370,14 +370,14 @@ __device__ float3 material(float* s,Shape o,float3 p,float3 n,float footprint){
     return c;
 }
 __device__ float3 sky(float3 rd){float t=clamp(rd.y*.7f+.35f);float3 c=lerp(make_float3(.76f,.79f,.76f),make_float3(.28f,.48f,.68f),t);float sun=powf(fmaxf(0,dot(rd,norm(make_float3(-.7f,1,-.5f)))),900);return c+make_float3(6,4.8f,3.1f)*sun;}
-__device__ float3 shade(float* s,const float* nodes,float3 ro,float3 rd,Hit h,unsigned int rng,float pixelScale,bool detailed){
+__device__ float3 shade(float* s,const float* nodes,float3 ro,float3 rd,Hit h,unsigned int rng,float pixelScale,bool detailed,float filteredSun=-1){
     if(h.id<0)return sky(rd);Shape o=hitShape(s,h);float3 p=ro+rd*h.t,n=h.n,c=material(s,o,p,n,h.t*pixelScale);
     if(o.mat==LIGHT)return o.color*3;
     float3 localP=rotateY(p,-s[18]);float sx=s[5],sz=s[6];int floor=0;for(int f=1;f<(int)s[8];++f)if(p.y+.05f>=floorBase(s,f))floor=f;float base=floorBase(s,floor),ceiling=floorBase(s,floor+1);
     bool indoors=fabsf(localP.x)<9.15f*sx&&localP.z>-8.25f*sz&&localP.z<11.2f*sz&&p.y<floorBase(s,(int)s[8])-.1f;
     float ambient=indoors?.20f:.40f;float3 illumination=make_float3(ambient*.9f,ambient*.95f,ambient);
     float3 sun=norm(make_float3(-.7f,1,-.5f));float nd=clamp(dot(n,sun));
-    if(nd>0){float3 jitter=make_float3(randf(rng)-.5f,randf(rng+1)-.5f,randf(rng+2)-.5f)*.025f;float3 l=norm(sun+jitter);bool visible=false;if(h.id==CAP)visible=h.visibility>.5f;else{Hit sh=trace(s,nodes,p+n*.003f,l,80,true);visible=sh.id<0;}if(visible)illumination=illumination+make_float3(2.4f,2.05f,1.55f)*nd;}
+    if(nd>0){if(filteredSun>=0)illumination=illumination+make_float3(2.4f,2.05f,1.55f)*(nd*filteredSun);else{float3 jitter=make_float3(randf(rng)-.5f,randf(rng+1)-.5f,randf(rng+2)-.5f)*.025f;float3 l=norm(sun+jitter);bool visible=false;if(h.id==CAP)visible=h.visibility>.5f;else{Hit sh=trace(s,nodes,p+n*.003f,l,80,true);visible=sh.id<0;}if(visible)illumination=illumination+make_float3(2.4f,2.05f,1.55f)*nd;}}
     if(indoors){
         int side=localP.x<0?-1:1,back=localP.z/sz<roomSplit(s,floor,side)?0:1;float rz=roomZ(s,floor,side,back)*sz;
         float3 lamp;if(fabsf(localP.x)<1.85f*sx)lamp=make_float3(0,ceiling-.35f,(floorf((localP.z/sz+6)/3.5f+.5f)*3.5f-6)*sz);else lamp=make_float3(side*5.2f*sx,ceiling-.3f,rz);
@@ -393,7 +393,20 @@ __device__ float3 shade(float* s,const float* nodes,float3 ro,float3 rd,Hit h,un
         Hit occ=trace(s,nodes,p+n*.004f,ao,1.1f,true);if(occ.id>=0)illumination=illumination*(.6f+.4f*clamp(occ.t/1.1f));}
     return c*illumination;
 }
-__global__ void render(float* s,const float* nodes,const float* C,const float* Far,const float* Glass,unsigned int* pixels,float* history,int w,int h,int quality){
+// Read only the surface attributes needed to keep a shadow filter on its receiver.
+__device__ Hit shadowSurface(float* s,const float* Far,int i){int b=i*16;Hit h;h.id=(int)(-Far[b])-2;h.t=Far[b+1];h.n=make_float3(Far[b+2],Far[b+3],Far[b+4]);if(Far[b]>0){h.id=CAP;h.t=Far[b];h.n=make_float3(Far[b+1],Far[b+2],Far[b+3]);h.feature.mat=(int)Far[b+7];h.feature.id=(unsigned int)Far[b+8]|((unsigned int)Far[b+9]<<16);}else if(h.id>=0)h.feature=readShape(s,h.id);return h;}
+// One existing sun ray per opaque receiver, moved out of shade only during motion.
+__global__ void movingShadows(float* s,const float* nodes,const float* C,const float* Far,const float* Glass,const float* MotionHistory,float* Shadows,int w,int h,int enabled=1){
+ int x=(int)(blockIdx.x*blockDim.x+threadIdx.x),y=(int)blockIdx.y;if(x>=w||y>=h||C[9]>=64)return;int i=y*w+x,old=w*h*4;Shadows[i]=-1;if(!enabled||C[9]!=0||MotionHistory[old+16]<.5f)return;
+ float movement=0;for(int k=0;k<5;++k)movement+=fabsf(C[k]-MotionHistory[old+k]);if(movement<1e-7f)return;
+ Hit hit=shadowSurface(s,Far,i);if(hit.id<0||Glass[i*4+3]>0)return;int mat=hit.feature.mat;if(mat==GLASS||mat==LIGHT||mat==LEAF)return;float3 sun=norm(make_float3(-.7f,1,-.5f));if(dot(hit.n,sun)<=0)return;
+ if(hit.id==CAP){Shadows[i]=Far[i*16+15];return;}
+ Camera cam=readCam(C);float3 f=make_float3(sinf(cam.yaw)*cosf(cam.pitch),sinf(cam.pitch),cosf(cam.yaw)*cosf(cam.pitch)),right=make_float3(cosf(cam.yaw),0,-sinf(cam.yaw)),up=cross(f,right);float sx=(2*(x+.5f)/w-1)*(float(w)/h)*.68f,sy=(1-2*(y+.5f)/h)*.68f;float3 p=cam.foot+make_float3(0,1.65f,0)+norm(f+right*sx+up*sy)*hit.t;unsigned int rng=mix(i);float3 jitter=make_float3(randf(rng)-.5f,randf(rng+1)-.5f,randf(rng+2)-.5f)*.025f;Hit sh=trace(s,nodes,p+hit.n*.003f,norm(sun+jitter),80,true);Shadows[i]=sh.id<0?1:0;
+}
+__device__ float blurSun(float* s,const float* Far,const float* Shadows,int x,int y,int w,int h){int i=y*w+x;if(Shadows[i]<0)return -1;Hit center=shadowSurface(s,Far,i);float total=Shadows[i]*4,weight=4;
+ for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx){if(dx==0&&dy==0)continue;int nx=x+dx,ny=y+dy;if(nx<0||nx>=w||ny<0||ny>=h)continue;int j=ny*w+nx;if(Shadows[j]<0)continue;Hit other=shadowSurface(s,Far,j);if(other.id<0||other.feature.id!=center.feature.id||other.feature.mat!=center.feature.mat||dot(other.n,center.n)<.999f||fabsf(other.t-center.t)>fmaxf(.05f,center.t*.02f))continue;float a=dx==0||dy==0?2:1;total+=Shadows[j]*a;weight+=a;}return total/weight;
+}
+__global__ void render(float* s,const float* nodes,const float* C,const float* Far,const float* Glass,const float* Shadows,unsigned int* pixels,float* history,int w,int h,int quality){
     int x=(int)(blockIdx.x*blockDim.x+threadIdx.x),y=(int)blockIdx.y;if(x>=w||y>=h)return;int i=y*w+x;int sample=(int)C[9];if(sample>=64)return;Camera cam=readCam(C);unsigned int rng=mix(i^sample*747796405u);
     float3 f=make_float3(sinf(cam.yaw)*cosf(cam.pitch),sinf(cam.pitch),cosf(cam.yaw)*cosf(cam.pitch)),right=make_float3(cosf(cam.yaw),0,-sinf(cam.yaw)),up=cross(f,right);
     float jx=sample?randf(rng)-.5f:0,jy=sample?randf(rng+7)-.5f:0;
@@ -403,7 +416,7 @@ __global__ void render(float* s,const float* nodes,const float* C,const float* F
         float3 p=ro+rd*hit.t;Hit through=trace(s,nodes,p+rd*.06f,rd);color=shade(s,nodes,p+rd*.06f,rd,through,rng,1.f/h,quality>0);
         float3 reflected=rd-hit.n*(2*dot(rd,hit.n));float fresnel=.035f+.65f*powf(1-fabsf(dot(rd,hit.n)),5);
         color=lerp(color*make_float3(.94f,.98f,.98f),sky(reflected),fresnel);
-    }else color=shade(s,nodes,ro,rd,hit,rng,1.f/h,quality>0);
+    }else color=shade(s,nodes,ro,rd,hit,rng,1.f/h,quality>0,blurSun(s,Far,Shadows,x,y,w,h));
     if(hit.id==CAP&&Glass[i*4+3]>0)color=lerp(color*make_float3(.94f,.98f,.98f),make_float3(Glass[i*4],Glass[i*4+1],Glass[i*4+2]),Glass[i*4+3]);
     if(sample>0)color=lerp(make_float3(history[i*4],history[i*4+1],history[i*4+2]),color,1.f/(sample+1));history[i*4]=color.x;history[i*4+1]=color.y;history[i*4+2]=color.z;
     color=color*1.35f;

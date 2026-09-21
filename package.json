@@ -12,7 +12,8 @@
     "profile:baseline": "node tools/profile-render.mjs baseline",
     "profile:compare": "node tools/profile-render.mjs candidate",
     "build:pages": "npm run build && node tools/package-pages.mjs",
-    "test:motion": "node tools/test-motion-cache.mjs"
+    "test:motion": "node tools/test-motion-cache.mjs",
+    "test:shadows": "node tools/test-shadow-blur.mjs"
   },
   "devDependencies": {
     "playwright": "1.56.1"
