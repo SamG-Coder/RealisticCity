@@ -89,6 +89,12 @@ __device__ float3 closestStreet(Street r,float3 p){float best=1e20f;float3 close
 __device__ Street frontage(unsigned int seed,int x,int z){Street best=street(seed,x,z,0);float score=1e9f;float3 center=make_float3(x*40.0f,0,z*40.0f);for(int dz=-1;dz<=2;++dz)for(int dx=-1;dx<=2;++dx)for(int axis=0;axis<2;++axis){Street r=street(seed,x+dx,z+dz,axis);if(!r.active||r.kind==6)continue;float3 q=closestStreet(r,center);float rank=dot(q-center,q-center);if(rank<score){score=rank;best=r;}}return best;}
 __device__ bool buildablePlot(unsigned int seed,int x,int z){Street r=frontage(seed,x,z);float3 center=make_float3(x*40.0f,0,z*40.0f),d=closestStreet(r,center)-center;return r.active&&r.kind!=6&&dot(d,d)<35.0f*35.0f;}
 __device__ float buildingAngle(unsigned int seed,int x,int z){Street r=frontage(seed,x,z);float3 center=make_float3(x*40.0f,0,z*40.0f),normal=norm(closestStreet(r,center)-center);return atan2f(-normal.x,-normal.z);}
+// Persistent exact plot descriptors; direct-mapped world addresses retain entries on rebasing.
+struct Plot {float angle;float value;int available;};
+__device__ Plot describePlot(unsigned int seed,int x,int z){Street access=frontage(seed,x,z);float3 center=make_float3(x*40.0f,0,z*40.0f),delta=closestStreet(access,center)-center,normal=norm(delta);Plot p;p.angle=atan2f(-normal.x,-normal.z);p.value=propertyValue(seed,x,z);p.available=access.active&&access.kind!=6&&dot(delta,delta)<35.0f*35.0f?1:0;return p;}
+__device__ int plotSlot(int x,int z){return ((x%128+128)%128)+((z%128+128)%128)*128;}
+__device__ Plot cachedPlot(const float* Districts,unsigned int seed,int x,int z,int enabled){int b=plotSlot(x,z)*8;if(enabled&&Districts[b+3]==1&&Districts[b]==(float)x&&Districts[b+1]==(float)z&&Districts[b+2]==(float)seed){Plot p;p.angle=Districts[b+4];p.value=Districts[b+5];p.available=(int)Districts[b+6];return p;}return describePlot(seed,x,z);}
+__global__ void prepareDistricts(float* Districts,unsigned int seed,int centerX,int centerZ){int i=(int)(blockIdx.x*blockDim.x+threadIdx.x);if(i>=16384)return;int x=centerX+i%128-64,z=centerZ+i/128-64,b=plotSlot(x,z)*8;if(Districts[b+3]==1&&Districts[b]==(float)x&&Districts[b+1]==(float)z&&Districts[b+2]==(float)seed)return;Plot p=describePlot(seed,x,z);Districts[b]=(float)x;Districts[b+1]=(float)z;Districts[b+2]=(float)seed;Districts[b+4]=p.angle;Districts[b+5]=p.value;Districts[b+6]=(float)p.available;Districts[b+7]+=1;Districts[b+3]=1;}
 __device__ float3 regionColor(unsigned int seed,int x,int z){float v=randf(regionKey(seed,x,z));return lerp(make_float3(.19f,.26f,.105f),make_float3(.38f,.36f,.20f),v);}
 __device__ float3 outdoorMaterial(float* s,float3 p,float footprint){
     unsigned int seed=(unsigned int)s[22];float wx=p.x+s[20]*40.0f,wz=p.z+s[21]*40.0f;float3 point=make_float3(wx,0,wz);
@@ -201,13 +207,13 @@ __device__ void sideWindow(float* s,float x,float y,float z){
     box(s,make_float3(x,y+1.8f,z),make_float3(.13f,.84f,.028f),METAL,make_float3(.16f,.18f,.18f));
     box(s,make_float3(x,y+.92f,z),make_float3(.3f,.06f,1.18f),CONCRETE,make_float3(.65f,.64f,.57f));
 }
-__device__ void emitBuilding(float* s,unsigned int seed,int lotX,int lotZ,int resident,float offsetX,float offsetZ){
-    Street access=frontage(seed,lotX,lotZ);float3 center=make_float3(lotX*40.0f,0,lotZ*40.0f),delta=closestStreet(access,center)-center,normal=norm(delta);
-    s[16]=offsetX;s[17]=offsetZ;s[18]=atan2f(-normal.x,-normal.z);s[26]=0;unsigned int key=regionKey(neighbourhoodKey(seed,lotX,lotZ)^0x484F5553u,lotX,lotZ);
+__device__ void emitBuilding(float* s,const float* Districts,unsigned int seed,int lotX,int lotZ,int resident,float offsetX,float offsetZ,int cacheEnabled=1){
+    Plot plot=cachedPlot(Districts,seed,lotX,lotZ,cacheEnabled);
+    s[16]=offsetX;s[17]=offsetZ;s[18]=plot.angle;s[26]=0;unsigned int key=regionKey(neighbourhoodKey(seed,lotX,lotZ)^0x484F5553u,lotX,lotZ);
     s[15]=(float)resident;s[3]=(float)(key&65535u);s[4]=(float)(key>>16);
-    float value=propertyValue(seed,lotX,lotZ);unsigned int style=neighbourhoodKey(seed,lotX,lotZ);
+    float value=plot.value;unsigned int style=neighbourhoodKey(seed,lotX,lotZ);
     s[5]=.90f+.16f*value+.07f*randf(key^101u);s[6]=.93f+.13f*value+.07f*randf(key^102u);s[7]=randf(key^103u)<.8f?0:(float)(1u+mix(key^103u)%2u);s[8]=(float)(value<.35f?3+(int)(mix(key^104u)%2u):(value>.65f?2:2+(int)(mix(key^104u)%2u)));s[9]=(float)(randf(key^105u)<.8f?mix(style^105u)%3u:mix(key^105u)%3u);
-    if(!(access.active&&access.kind!=6&&dot(delta,delta)<35.0f*35.0f)){s[8]=0;s[15]=0;for(int f=0;f<=4;++f)s[10+f]=0;return;}
+    if(!plot.available){s[8]=0;s[15]=0;for(int f=0;f<=4;++f)s[10+f]=0;return;}
     int floors=(int)s[8];s[10]=0.0f;for(int f=1;f<=4;++f)s[10+f]=s[9+f]+3.08f+.27f*randf(mix(key^(unsigned int)f)^106u);
     float3 plaster=lerp(make_float3(.64f,.63f,.57f),make_float3(.87f,.85f,.79f),value),brick=make_float3(.40f,.20f,.115f),floorWood=make_float3(.52f,.32f,.17f),dark=make_float3(.13f,.16f,.15f);
     int facade=(int)s[7]==1?CONCRETE:(value>.65f?PLASTER:BRICK);brick=lerp(make_float3(.29f,.12f,.07f),make_float3(.49f,.35f,.22f),randf(key^107u));if(facade==CONCRETE)brick=make_float3(.56f,.58f,.54f);if(facade==PLASTER)brick=plaster;else brick=brick*(.85f+.25f*value);
@@ -295,12 +301,12 @@ __device__ void emitOutdoors(float* s,unsigned int seed,int x,int z,float ox,flo
 }
 // A bounded residency window enumerates the SAME exterior grammar at every address.
 // No proxy facade or different distant roof. Only hidden interior allocation changes.
-__global__ void generateScene(float* s,unsigned int seed,int lotX,int lotZ,int resident,int radius){
+__global__ void generateScene(float* s,const float* Districts,unsigned int seed,int lotX,int lotZ,int resident,int radius,int cacheEnabled=1){
     if(threadIdx.x||blockIdx.x)return;s[0]=0;s[2]=0;s[5]=1;s[6]=1;s[16]=0;s[17]=0;s[3]=0;s[4]=0;s[18]=0;s[26]=0;s[27]=0;s[20]=(float)lotX;s[21]=(float)lotZ;s[22]=(float)seed;s[24]=(float)radius;
     box(s,make_float3(0,-.2f,0),make_float3(20000,.2f,20000),GROUND,make_float3(.26f,.28f,.25f));
     emitOutdoors(s,seed,lotX,lotZ,0,0);
-    emitBuilding(s,seed,lotX,lotZ,resident,0,0);s[1]=s[0];float header[19];for(int i=1;i<19;++i)header[i]=s[i];
-    for(int dz=-radius;dz<=radius;++dz)for(int dx=-radius;dx<=radius;++dx){if(dx!=0||dz!=0){emitOutdoors(s,seed,lotX+dx,lotZ+dz,dx*40.0f,dz*40.0f);emitBuilding(s,seed,lotX+dx,lotZ+dz,0,dx*40.0f,dz*40.0f);}}
+    emitBuilding(s,Districts,seed,lotX,lotZ,resident,0,0,cacheEnabled);s[1]=s[0];float header[19];for(int i=1;i<19;++i)header[i]=s[i];
+    for(int dz=-radius;dz<=radius;++dz)for(int dx=-radius;dx<=radius;++dx){if(dx!=0||dz!=0){emitOutdoors(s,seed,lotX+dx,lotZ+dz,dx*40.0f,dz*40.0f);emitBuilding(s,Districts,seed,lotX+dx,lotZ+dz,0,dx*40.0f,dz*40.0f,cacheEnabled);}}
     float overflow=s[2];for(int i=1;i<19;++i)s[i]=header[i];s[2]=overflow;
 }
 
@@ -321,15 +327,15 @@ __device__ void queryBox(float* s,float3 p,float3 half,int mat,float3 color,bool
  s[32]=o.lo.x;s[33]=o.lo.y;s[34]=o.lo.z;s[35]=o.hi.x;s[36]=o.hi.y;s[37]=o.hi.z;s[38]=color.x;s[39]=color.y;s[40]=color.z;s[41]=(float)mat;s[42]=solid?1:0;s[43]=s[3];s[44]=s[4];s[45]=s[16];s[46]=s[17];s[47]=s[18];
 }
 // QUERY_GRAMMAR_INSERT
-__device__ Hit queryLot(float* s,int x,int z,float3 ro,float3 rd,float limit,bool shadow){float q[64];for(int k=0;k<64;++k)q[k]=0;q[27]=1;q[28]=limit;q[48]=ro.x;q[49]=ro.y;q[50]=ro.z;q[51]=rd.x;q[52]=rd.y;q[53]=rd.z;q[54]=shadow?1:0;
- queryBuilding(q,(unsigned int)s[22],(int)s[20]+x,(int)s[21]+z,0,x*40.0f,z*40.0f);
+__device__ Hit queryLot(float* s,const float* Districts,int x,int z,float3 ro,float3 rd,float limit,bool shadow,int cacheEnabled){float q[64];for(int k=0;k<64;++k)q[k]=0;q[27]=1;q[28]=limit;q[48]=ro.x;q[49]=ro.y;q[50]=ro.z;q[51]=rd.x;q[52]=rd.y;q[53]=rd.z;q[54]=shadow?1:0;
+ queryBuilding(q,Districts,(unsigned int)s[22],(int)s[20]+x,(int)s[21]+z,0,x*40.0f,z*40.0f,cacheEnabled);
  Hit h;h.id=-1;h.t=limit;h.n=make_float3(0,0,0);if(q[55]>.5f){h.id=CAP;h.t=q[28];h.n=make_float3(q[29],q[30],q[31]);h.feature=readShape(q,0);}return h;}
-__device__ Hit distantQuery(float* s,float3 ro,float3 rd,Hit hit,bool shadow){
+__device__ Hit distantQuery(float* s,const float* Districts,float3 ro,float3 rd,Hit hit,bool shadow,int cacheEnabled){
  float end=fminf(hit.t,8000.0f),start=.002f;if(ro.y>18){if(rd.y>=0)return hit;start=fmaxf(start,(18-ro.y)/rd.y);}if(ro.y<-.25f){if(rd.y<=0)return hit;start=fmaxf(start,(-.25f-ro.y)/rd.y);}if(rd.y>0)end=fminf(end,(18-ro.y)/rd.y);if(rd.y<0)end=fminf(end,(-.25f-ro.y)/rd.y);if(start>=end)return hit;
  float3 p=ro+rd*start;int x=(int)floorf((p.x+20)/40),z=(int)floorf((p.z+20)/40),stepX=rd.x<0?-1:1,stepZ=rd.z<0?-1:1;
  float tx=fabsf(rd.x)<1e-8f?1e30f:((x*40.0f+stepX*20.0f)-ro.x)/rd.x,tz=fabsf(rd.z)<1e-8f?1e30f:((z*40.0f+stepZ*20.0f)-ro.z)/rd.z,dx=40/fmaxf(1e-8f,fabsf(rd.x)),dz=40/fmaxf(1e-8f,fabsf(rd.z));
  float3 inv=make_float3(1/(fabsf(rd.x)<1e-8f?1e-8f:rd.x),1/(fabsf(rd.y)<1e-8f?1e-8f:rd.y),1/(fabsf(rd.z)<1e-8f?1e-8f:rd.z));
- for(int step=0;step<600&&start<end;++step){if(abs(x)>(int)s[24]||abs(z)>(int)s[24]){float3 lo=make_float3(x*40.0f-19,-.25f,z*40.0f-19),hi=make_float3(x*40.0f+19,18,z*40.0f+19);if(bound(ro,inv,lo,hi,hit.t)<hit.t){Hit q=queryLot(s,x,z,ro,rd,hit.t,shadow);if(q.id>=0){hit=q;end=fminf(end,q.t);if(shadow)return hit;}}}
+ for(int step=0;step<600&&start<end;++step){if(abs(x)>(int)s[24]||abs(z)>(int)s[24]){float3 lo=make_float3(x*40.0f-19,-.25f,z*40.0f-19),hi=make_float3(x*40.0f+19,18,z*40.0f+19);if(bound(ro,inv,lo,hi,hit.t)<hit.t){Hit q=queryLot(s,Districts,x,z,ro,rd,hit.t,shadow,cacheEnabled);if(q.id>=0){hit=q;end=fminf(end,q.t);if(shadow)return hit;}}}
  if(tx<tz){start=tx;tx+=dx;x+=stepX;}else{start=tz;tz+=dz;z+=stepZ;}}
  return hit;
 }
@@ -459,20 +465,46 @@ if(view==5){C[2]=4.7f;C[1]=floorBase(s,(int)s[8]-1);C[3]=PI;C[4]=-.03f;}float3 p
 
 __global__ void probeOutdoor(float* s,const float* I,float* Plan){if(threadIdx.x||blockIdx.x)return;float3 c=outdoorMaterial(s,make_float3(I[0],0,I[1]),0);Plan[60]=c.x;Plan[61]=c.y;Plan[62]=c.z;}
 
-__global__ void probeRay(float* s,const float* nodes,const float* I,float* Plan){if(threadIdx.x||blockIdx.x)return;Hit h=trace(s,nodes,make_float3(I[0],I[1],I[2]),norm(make_float3(I[3],I[4],I[5])));h=distantQuery(s,make_float3(I[0],I[1],I[2]),norm(make_float3(I[3],I[4],I[5])),h,false);Plan[56]=h.t;Plan[57]=(float)h.id;if(h.id>=0){Shape o=hitShape(s,h);Plan[58]=(float)o.mat;Plan[59]=o.color.x;Plan[60]=o.color.y;Plan[61]=o.color.z;}}
+__global__ void probeRay(float* s,const float* nodes,const float* Districts,const float* I,float* Plan,int cacheEnabled=1){if(threadIdx.x||blockIdx.x)return;Hit h=trace(s,nodes,make_float3(I[0],I[1],I[2]),norm(make_float3(I[3],I[4],I[5])));h=distantQuery(s,Districts,make_float3(I[0],I[1],I[2]),norm(make_float3(I[3],I[4],I[5])),h,false,cacheEnabled);Plan[56]=h.t;Plan[57]=(float)h.id;if(h.id>=0){Shape o=hitShape(s,h);Plan[58]=(float)o.mat;Plan[59]=o.color.x;Plan[60]=o.color.y;Plan[61]=o.color.z;}}
 
 __global__ void probeStreet(float* s,const float* I,float* Plan){if(threadIdx.x||blockIdx.x)return;Street r=street((unsigned int)s[22],(int)I[0],(int)I[1],(int)I[2]);Plan[40]=districtValue((unsigned int)s[22],(int)I[0],(int)I[1]);Plan[41]=neighbourhoodValue((unsigned int)s[22],(int)I[0],(int)I[1]);Plan[42]=propertyValue((unsigned int)s[22],(int)I[0],(int)I[1]);Plan[45]=(float)r.terminal;Plan[44]=highwayDistance((unsigned int)s[22],(int)I[0]);Plan[43]=(float)highwayOffset((unsigned int)s[22]);Plan[48]=(float)r.kind;Plan[49]=(float)r.active;Plan[50]=r.a.x;Plan[51]=r.a.z;Plan[52]=r.b.x;Plan[53]=r.b.z;Plan[54]=r.width;Plan[55]=(float)(neighbourhoodKey((unsigned int)s[22],(int)I[0],(int)I[1])&16777215u);}
 
 // Keep procedural traversal in its own compute pass to bound driver compilation work.
-__global__ void farVisibility(float* s,const float* nodes,const float* C,float* Far,float* Glass,int w,int h){
+__global__ void farVisibility(float* s,const float* nodes,const float* Districts,const float* C,float* Far,float* Glass,int w,int h,int cacheEnabled=1){
  int x=(int)(blockIdx.x*blockDim.x+threadIdx.x),y=(int)blockIdx.y;if(x>=w||y>=h)return;int i=y*w+x,sample=(int)C[9];if(sample>=64)return;Far[i*16]=0;Glass[i*4+3]=0;
  Camera cam=readCam(C);unsigned int rng=mix(i^sample*747796405u);float3 f=make_float3(sinf(cam.yaw)*cosf(cam.pitch),sinf(cam.pitch),cosf(cam.yaw)*cosf(cam.pitch)),right=make_float3(cosf(cam.yaw),0,-sinf(cam.yaw)),up=cross(f,right);float jx=sample?randf(rng)-.5f:0,jy=sample?randf(rng+7)-.5f:0;float sx=(2*(x+.5f+jx)/w-1)*(float(w)/h)*.68f,sy=(1-2*(y+.5f+jy)/h)*.68f;
  float3 ro=cam.foot+make_float3(0,1.65f,0),rd=norm(f+right*sx+up*sy);Hit hit=trace(s,nodes,ro,rd);
  // Negative marker caches the exact resident hit (including misses) for shading.
  int primary=i*16;Far[primary]=-(float)(hit.id+2);Far[primary+1]=hit.t;Far[primary+2]=hit.n.x;Far[primary+3]=hit.n.y;Far[primary+4]=hit.n.z;
- hit=distantQuery(s,ro,rd,hit,false);bool firstFar=hit.id==CAP;if(!firstFar&&!(hit.id>=0&&hitShape(s,hit).mat==GLASS))return;
- if(hit.feature.mat==GLASS){float3 reflected=rd-hit.n*(2*dot(rd,hit.n)),reflection=sky(reflected);float fresnel=.035f+.65f*powf(1-fabsf(dot(rd,hit.n)),5),offset=hit.t+.06f;float3 throughOrigin=ro+rd*offset;Hit next=trace(s,nodes,throughOrigin,rd);next=distantQuery(s,throughOrigin,rd,next,false);if(next.id>=0){if(!firstFar&&next.id!=CAP)return;Shape feature=hitShape(s,next);hit=next;hit.id=CAP;hit.feature=feature;hit.t+=offset;Glass[i*4]=reflection.x;Glass[i*4+1]=reflection.y;Glass[i*4+2]=reflection.z;Glass[i*4+3]=fresnel;}}
+ hit=distantQuery(s,Districts,ro,rd,hit,false,cacheEnabled);bool firstFar=hit.id==CAP;if(!firstFar&&!(hit.id>=0&&hitShape(s,hit).mat==GLASS))return;
+ if(hit.feature.mat==GLASS){float3 reflected=rd-hit.n*(2*dot(rd,hit.n)),reflection=sky(reflected);float fresnel=.035f+.65f*powf(1-fabsf(dot(rd,hit.n)),5),offset=hit.t+.06f;float3 throughOrigin=ro+rd*offset;Hit next=trace(s,nodes,throughOrigin,rd);next=distantQuery(s,Districts,throughOrigin,rd,next,false,cacheEnabled);if(next.id>=0){if(!firstFar&&next.id!=CAP)return;Shape feature=hitShape(s,next);hit=next;hit.id=CAP;hit.feature=feature;hit.t+=offset;Glass[i*4]=reflection.x;Glass[i*4+1]=reflection.y;Glass[i*4+2]=reflection.z;Glass[i*4+3]=fresnel;}}
  if(hit.id!=CAP)return;Shape o=hit.feature;int b=i*16;
- float3 p=ro+rd*hit.t,sun=norm(make_float3(-.7f,1,-.5f)),jitter=make_float3(randf(rng)-.5f,randf(rng+1)-.5f,randf(rng+2)-.5f)*.025f,l=norm(sun+jitter);Hit sh=trace(s,nodes,p+hit.n*.003f,l,80,true);sh=distantQuery(s,p+hit.n*.003f,l,sh,true);Far[b+15]=sh.id<0?1:0;
+ float3 p=ro+rd*hit.t,sun=norm(make_float3(-.7f,1,-.5f)),jitter=make_float3(randf(rng)-.5f,randf(rng+1)-.5f,randf(rng+2)-.5f)*.025f,l=norm(sun+jitter);Hit sh=trace(s,nodes,p+hit.n*.003f,l,80,true);sh=distantQuery(s,Districts,p+hit.n*.003f,l,sh,true,cacheEnabled);Far[b+15]=sh.id<0?1:0;
  Far[b]=hit.t;Far[b+1]=hit.n.x;Far[b+2]=hit.n.y;Far[b+3]=hit.n.z;Far[b+4]=o.color.x;Far[b+5]=o.color.y;Far[b+6]=o.color.z;Far[b+7]=(float)o.mat;Far[b+8]=(float)(o.id&65535u);Far[b+9]=(float)(o.id>>16);Far[b+10]=o.origin.x;Far[b+11]=o.origin.z;Far[b+12]=o.angle;Far[b+13]=o.hi.x-o.lo.x;Far[b+14]=o.hi.z-o.lo.z;
 }
+
+// Reproject only verified diffuse surfaces. Full current visibility/shading still runs.
+// Far is reused as the current surface buffer after render has consumed its ray records.
+__global__ void temporalResolve(float* s,const float* C,float* Far,const float* Glass,float* history,const float* MotionHistory,const float* MotionSurface,unsigned int* pixels,int w,int h,int enabled=1){
+ int x=(int)(blockIdx.x*blockDim.x+threadIdx.x),y=(int)blockIdx.y;if(x>=w||y>=h||C[9]>=64||!enabled)return;int i=y*w+x,b=i*16,old=w*h*4;float mark=Far[b],t;float3 n;unsigned int key=0;int mat=-1;
+ if(mark>0){t=Far[b];n=make_float3(Far[b+1],Far[b+2],Far[b+3]);mat=(int)Far[b+7];key=(unsigned int)Far[b+8]|((unsigned int)Far[b+9]<<16);}else{int id=(int)(-mark)-2;t=Far[b+1];n=make_float3(Far[b+2],Far[b+3],Far[b+4]);if(id>=0){Shape o=readShape(s,id);mat=o.mat;key=o.id;}}
+ Camera cam=readCam(C);int sample=(int)C[9];unsigned int rng=mix(i^sample*747796405u);float3 f=make_float3(sinf(cam.yaw)*cosf(cam.pitch),sinf(cam.pitch),cosf(cam.yaw)*cosf(cam.pitch)),right=make_float3(cosf(cam.yaw),0,-sinf(cam.yaw)),up=cross(f,right);float jx=sample?randf(rng)-.5f:0,jy=sample?randf(rng+7)-.5f:0;
+ float sx=(2*(x+.5f+jx)/w-1)*(float(w)/h)*.68f,sy=(1-2*(y+.5f+jy)/h)*.68f;float3 point=cam.foot+make_float3(0,1.65f,0)+norm(f+right*sx+up*sy)*t;
+ bool eligible=mat>=0&&mat!=GLASS&&mat!=METAL&&mat!=LIGHT&&mat!=LEAF&&Glass[i*4+3]==0;
+ float identity=(float)((key&65535u)+(unsigned int)(mat<0?0:mat)*65536u);history[i*4+3]=0;
+ if(eligible&&sample==0&&MotionHistory[old+16]>.5f){
+  float3 oldFoot=make_float3(MotionHistory[old],MotionHistory[old+1],MotionHistory[old+2]),move=cam.foot-oldFoot;float yaw=MotionHistory[old+3],pitch=MotionHistory[old+4];float3 pf=make_float3(sinf(yaw)*cosf(pitch),sinf(pitch),cosf(yaw)*cosf(pitch)),pr=make_float3(cosf(yaw),0,-sinf(yaw)),pu=cross(pf,pr),delta=point-oldFoot-make_float3(0,1.65f,0);float z=dot(delta,pf),motion=dot(move,move);
+  if(z>.05f&&motion<4.0f&&dot(f,pf)>.95f&&(motion>1e-10f||fabsf(cam.yaw-yaw)>1e-7f||fabsf(cam.pitch-pitch)>1e-7f)){
+   int px=(int)floorf((dot(delta,pr)/(z*.68f*(float(w)/h))+1)*.5f*w),py=(int)floorf((1-dot(delta,pu)/(z*.68f))*.5f*h);
+   if(px>=0&&px<w&&py>=0&&py<h){int j=py*w+px,a=j*8;float3 previous=make_float3(MotionSurface[a],MotionSurface[a+1],MotionSurface[a+2]),pn=make_float3(MotionSurface[a+3],MotionSurface[a+4],MotionSurface[a+5]),error=previous-point;float tolerance=clamp(t*1.8f/h,.02f,.12f);
+    if(MotionSurface[a+6]==identity&&MotionSurface[a+7]==(float)(key>>16)&&dot(n,pn)>.999f&&fabsf(dot(error,n))<.01f&&dot(error,error)<tolerance*tolerance){
+     float3 current=make_float3(history[i*4],history[i*4+1],history[i*4+2]),past=make_float3(MotionHistory[j*4],MotionHistory[j*4+1],MotionHistory[j*4+2]);float count=fminf(7,fmaxf(MotionHistory[j*4+3],MotionHistory[old+9]+1)),alpha=count/(count+1);
+     float3 radius=make_float3(.005f,.005f,.005f)+current*.03f;past=vmax(current-radius,vmin(current+radius,past));float3 color=lerp(current,past,alpha);history[i*4]=color.x;history[i*4+1]=color.y;history[i*4+2]=color.z;history[i*4+3]=count+1;
+     color=color*1.35f;float vals[3]={color.x,color.y,color.z};unsigned int bytes[3];for(int k=0;k<3;++k){float v=vals[k];v=clamp((v*(2.51f*v+.03f))/(v*(2.43f*v+.59f)+.14f));bytes[k]=(unsigned int)(powf(v,1/2.2f)*255+.5f);}pixels[i]=0xff000000u|bytes[0]|(bytes[1]<<8)|(bytes[2]<<16);
+    }
+   }
+  }
+ }
+ Far[b]=point.x;Far[b+1]=point.y;Far[b+2]=point.z;Far[b+3]=n.x;Far[b+4]=n.y;Far[b+5]=n.z;Far[b+6]=eligible?identity:-1;Far[b+7]=(float)(key>>16);
+}
+__global__ void rememberFrame(const float* s,const float* C,const float* Far,const float* history,float* MotionHistory,float* MotionSurface,int w,int h,int enabled=1){int i=(int)(blockIdx.x*blockDim.x+threadIdx.x);if(i>=w*h||C[9]>=64||!enabled)return;for(int k=0;k<4;++k)MotionHistory[i*4+k]=history[i*4+k];for(int k=0;k<8;++k)MotionSurface[i*8+k]=Far[i*16+k];if(i==0){int b=w*h*4;for(int k=0;k<16;++k)MotionHistory[b+k]=C[k];MotionHistory[b+16]=1;}}

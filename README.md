@@ -87,6 +87,16 @@ Court topology checks verify three connected access segments, one turning bulb, 
 
 ## Performance profiling
 
+### Reusing seeded sections and motion history
+
+A persistent GPU cache stores exact road-frontage orientation, property value, and buildability for **16,384 plot addresses** in a 5.12km-wide window. Entries are keyed by the full world seed and integer address, including negative addresses and seed zero. Moving one 40m address cell replaces only the 128 entries on the entering edge; unchanged entries survive rebasing. The cache costs 512 KiB. Queries outside its window use the same generator, so the 8km horizon and building detail remain unchanged. This caches plot descriptors; resident geometry and its BVH still rebuild when the residency window changes.
+
+During movement, a full-resolution GPU pass projects current surface positions into the previous frame. History is accepted only when the material, building key, surface normal, depth plane, and nearby position agree. Newly revealed or mismatched surfaces use their current samples. Glass, metal, lights, and foliage are excluded. Rapid motion, large turns, teleporting, rebasing, resizing, seed changes, and lighting changes reject or invalidate history. Accepted colors are tightly clamped against the current sample and use at most eight samples of effective history to limit trails.
+
+Current visibility and shading still run for every active pixel: this does not reduce resolution or skip current rays. Descriptor reuse supplies the measured speedup; reprojection retains a bounded amount of filtered history during movement. Moving images are not bit-identical to unfiltered frames. In the tested eight-frame movement sequence, the maximum channel difference was 7/255. Stationary reference images, geometry, and accumulation history remain bit-identical. Motion buffers add about **95 MiB at 1920×1080**, using fixed allocations until a resolution change. The HUD distinguishes `rendering` from `settled`, because after 64 stationary samples the expensive shader work stops and the displayed FPS mostly measures presentation.
+
+Run `npm run test:motion` to check retained cache entries, edge replacement, exact cached/uncached geometry, seed zero, actual history reuse, bounded image differences, and history rejection after fast turns, teleports, and invalid surface data.
+
 `npm run profile:baseline` records an image/geometry reference and timings. After a renderer change, `npm run profile:compare` checks against that saved reference. Run them separately on the same GPU/browser, without other GPU benchmarks running. Reports are saved to `captures/performance-baseline.json` and `captures/performance-candidate.json`. The benchmark requires WebGPU timestamp-query support.
 
 The benchmark uses 1920×1080, full contact lighting, four fixed views across two seeds, two warm-up iterations, and ten measured iterations. GPU timestamp queries isolate visibility and shading; wall-clock medians cover normal draw submission through queue completion. SHA-256 comparisons cover generated geometry, pixels and floating-point accumulation history after eight samples. This verifies the sampled scenes exactly, rather than relying on visual similarity. It is not a guarantee of identical output on different GPU drivers.
@@ -97,9 +107,9 @@ Measured in Edge on the NVIDIA Blackwell adapter against baseline commit `b4b963
 
 | View | Before | After | Reduction |
 | --- | ---: | ---: | ---: |
-| exterior | 38.0 ms | 27.0 ms | 29% |
-| lobby | 33.9 ms | 25.9 ms | 24% |
-| flight | 57.5 ms | 39.0 ms | 32% |
-| room-seed17 | 34.9 ms | 26.0 ms | 26% |
+| exterior | 38.0 ms | 26.5 ms | 30% |
+| lobby | 33.9 ms | 26.1 ms | 23% |
+| flight | 57.5 ms | 28.9 ms | 50% |
+| room-seed17 | 34.9 ms | 26.5 ms | 24% |
 
-All four scenes matched their baseline geometry, pixel and history hashes exactly. These timings exclude startup shader compilation and do not represent a guaranteed displayed frame rate. The aerial view remains dominated by distant procedural visibility (about 30ms of GPU time in this measurement); shader preparation on a fresh browser still takes tens of seconds.
+All four scenes matched their baseline geometry, pixel and history hashes exactly. These timings include the new motion passes, exclude startup shader compilation, and do not represent a guaranteed displayed frame rate or a moving-camera benchmark. Relative to the previous renderer's 39.0ms aerial result, the descriptor cache and motion passes together measured 28.9ms (26% less time). The aerial view remains dominated by distant procedural visibility (about 20ms of GPU time in this measurement); shader preparation on a fresh browser still takes tens of seconds.
